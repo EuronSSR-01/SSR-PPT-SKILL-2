@@ -1,67 +1,228 @@
+body { margin: 0; }
 .ssr-player {
   --ssr-width: 1280px;
   --ssr-height: 720px;
   --ssr-scale: 1;
+  --ssr-backdrop: #0e0e10;
+  --ssr-accent: #f5f5f5;
+  --ssr-ui-bg: rgba(22, 22, 24, .78);
+  --ssr-ui-fg: #f5f5f5;
+  position: relative;
   height: 100vh;
   height: 100dvh;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  background: #16191e;
-  color: #f5f5f5;
+  overflow: hidden;
+  background: var(--ssr-backdrop);
+  color: var(--ssr-ui-fg);
 }
-.ssr-player *, .ssr-player *::before, .ssr-player *::after {
-  box-sizing: border-box;
-}
-.ssr-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+.ssr-player *, .ssr-player *::before, .ssr-player *::after { box-sizing: border-box; }
+.ssr-stage { position: absolute; inset: 0; overflow: hidden; touch-action: pan-y pinch-zoom; }
 #ssr-deck {
   position: absolute;
-  width: var(--ssr-width);
-  height: var(--ssr-height);
   left: 50%;
   top: 50%;
+  width: var(--ssr-deck-w, var(--ssr-width));
+  height: var(--ssr-deck-h, var(--ssr-height));
   transform: translate(-50%, -50%) scale(var(--ssr-scale));
   transform-origin: center;
   color: #171717;
 }
-.ssr-slide { position: absolute; inset: 0; overflow: hidden; background: #fff; }
-.ssr-slide[hidden] { display: none; }
-.ssr-controls {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 12px;
-  font: 14px/1.4 system-ui, sans-serif;
+.ssr-slide {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--ssr-width);
+  height: var(--ssr-height);
+  overflow: hidden;
+  background: #fff;
 }
-.ssr-controls button {
-  min-height: 40px;
-  border: 1px solid #717781;
-  border-radius: 6px;
-  padding: 6px 12px;
-  background: #272d36;
-  color: #fff;
+.ssr-slide[hidden] { display: none; }
+.ssr-slide.ssr-active { z-index: 2; }
+.ssr-slide.ssr-leaving { z-index: 1; }
+.ssr-notes { display: none !important; }
+
+/* Slide transitions: data-transition="fade" (default) | "slide" | "zoom" | "none" on #ssr-deck */
+#ssr-deck[data-transition="fade"] > .ssr-slide.ssr-enter { animation: ssr-fade-in .5s ease both; }
+#ssr-deck[data-transition="slide"] > .ssr-slide.ssr-enter { animation: ssr-slide-in .6s cubic-bezier(.2, .7, .2, 1) both; }
+#ssr-deck[data-transition="zoom"] > .ssr-slide.ssr-enter { animation: ssr-zoom-in .6s cubic-bezier(.2, .7, .2, 1) both; }
+@keyframes ssr-fade-in { from { opacity: 0; } }
+@keyframes ssr-slide-in { from { opacity: 0; translate: calc(var(--ssr-dir, 1) * 8%) 0; } }
+@keyframes ssr-zoom-in { from { opacity: 0; scale: 1.04; } }
+
+/* Entrance animations each time a slide is shown: data-anim="fade|up|down|left|right|scale|mask|draw", delay via --d */
+.ssr-slide.ssr-active [data-anim] { animation: .8s cubic-bezier(.2, .7, .2, 1) var(--d, 0ms) both; }
+.ssr-slide.ssr-active [data-anim="fade"] { animation-name: ssr-a-fade; }
+.ssr-slide.ssr-active [data-anim="up"] { animation-name: ssr-a-up; }
+.ssr-slide.ssr-active [data-anim="down"] { animation-name: ssr-a-down; }
+.ssr-slide.ssr-active [data-anim="left"] { animation-name: ssr-a-left; }
+.ssr-slide.ssr-active [data-anim="right"] { animation-name: ssr-a-right; }
+.ssr-slide.ssr-active [data-anim="scale"] { animation-name: ssr-a-scale; }
+.ssr-slide.ssr-active [data-anim="mask"] { animation-name: ssr-a-mask; animation-duration: 1s; }
+.ssr-slide.ssr-active .ssr-draw {
+  stroke-dasharray: 1;
+  animation: ssr-a-draw 1.4s cubic-bezier(.65, 0, .35, 1) var(--d, 0ms) both;
+}
+@keyframes ssr-a-fade { from { opacity: 0; } }
+@keyframes ssr-a-up { from { opacity: 0; translate: 0 32px; } }
+@keyframes ssr-a-down { from { opacity: 0; translate: 0 -32px; } }
+@keyframes ssr-a-left { from { opacity: 0; translate: -48px 0; } }
+@keyframes ssr-a-right { from { opacity: 0; translate: 48px 0; } }
+@keyframes ssr-a-scale { from { opacity: 0; scale: .94; } }
+@keyframes ssr-a-mask { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes ssr-a-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+
+/* Step-by-step reveal: data-step="1|2|..." appears on each "next" */
+.ssr-slide [data-step] { transition: opacity .5s ease, translate .5s cubic-bezier(.2, .7, .2, 1); }
+.ssr-slide [data-step]:not(.ssr-on) {
+  opacity: 0;
+  visibility: hidden;
+  translate: 0 16px;
+  transition: opacity .25s ease, translate .25s ease, visibility 0s linear .25s;
+}
+
+/* Overview grid */
+.ssr-is-overview .ssr-slide { box-shadow: 0 0 0 calc(1px / var(--ssr-scale)) rgba(255, 255, 255, .16); }
+.ssr-is-overview .ssr-slide.ssr-current {
+  outline: calc(4px / var(--ssr-scale)) solid var(--ssr-accent);
+  outline-offset: calc(6px / var(--ssr-scale));
+}
+.ssr-is-overview .ssr-slide, .ssr-is-overview .ssr-slide * { animation: none !important; transition: none !important; }
+.ssr-is-overview .ssr-slide [data-step] { opacity: 1 !important; visibility: visible !important; translate: none !important; }
+.ssr-ov-hit {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  width: var(--ssr-width);
+  height: var(--ssr-height);
+  padding: 0;
+  border: 0;
+  background: transparent;
   cursor: pointer;
 }
-.ssr-controls button:disabled { opacity: .45; cursor: default; }
-.ssr-controls button:focus-visible { outline: 2px solid #8bbcff; outline-offset: 2px; }
-.ssr-controls output { min-width: 72px; text-align: center; }
-[data-ssr-status]:empty { display: none; }
+.ssr-ov-hit:focus-visible { outline: none; } /* the focused slide is the highlighted .ssr-current */
+
+/* Player UI: floating, fades out when idle */
+.ssr-controls {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px;
+  border-radius: 999px;
+  background: var(--ssr-ui-bg);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .28);
+  color: var(--ssr-ui-fg);
+  font: 500 13px/1 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  transform: translateX(-50%);
+  transition: opacity .35s ease;
+}
+.ssr-controls button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.ssr-controls button:hover { background: rgba(255, 255, 255, .12); }
+.ssr-controls button:disabled { opacity: .35; cursor: default; background: transparent; }
+.ssr-controls button[aria-pressed="true"] { background: rgba(255, 255, 255, .2); }
+.ssr-controls button:focus-visible { outline: 2px solid #8bbcff; outline-offset: 1px; }
+.ssr-controls svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.ssr-count { min-width: 64px; padding: 0 4px; text-align: center; font-variant-numeric: tabular-nums; }
+.ssr-sep { width: 1px; height: 18px; margin: 0 4px; background: rgba(255, 255, 255, .18); }
+.ssr-progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 9;
+  width: 100%;
+  height: 3px;
+  background: rgba(255, 255, 255, .08);
+  transition: opacity .35s ease;
+}
+.ssr-progress > i {
+  display: block;
+  width: calc(var(--ssr-progress, 0) * 100%);
+  height: 100%;
+  background: var(--ssr-accent);
+  transition: width .4s ease;
+}
+.ssr-player.ssr-idle { cursor: none; }
+.ssr-player.ssr-idle .ssr-progress { opacity: 0; }
+.ssr-player.ssr-idle .ssr-controls { opacity: 0; pointer-events: none; }
+.ssr-player.ssr-idle .ssr-controls:has(:focus-visible),
+.ssr-is-overview .ssr-controls { opacity: 1; pointer-events: auto; }
+.ssr-notes-panel {
+  position: absolute;
+  left: 50%;
+  bottom: 72px;
+  z-index: 11;
+  width: min(880px, calc(100% - 32px));
+  max-height: 32vh;
+  overflow: auto;
+  padding: 14px 20px 16px;
+  border-radius: 14px;
+  background: rgba(16, 16, 18, .94);
+  color: #f2f2f2;
+  font: 16px/1.65 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  transform: translateX(-50%);
+}
+.ssr-notes-panel[hidden] { display: none; }
+.ssr-notes-head { margin-bottom: 6px; color: #a1a1a6; font-size: 13px; }
+.ssr-blackout { position: absolute; inset: 0; z-index: 20; background: #000; }
+.ssr-blackout[hidden] { display: none; }
+.ssr-status {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  z-index: 12;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--ssr-ui-bg);
+  color: var(--ssr-ui-fg);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  transform: translateX(-50%);
+}
+.ssr-status:empty { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ssr-player *, .ssr-player *::before, .ssr-player *::after { animation: none !important; transition: none !important; }
+}
+
+/* The page size is injected by player.js from the canvas size. */
 @media print {
-  @page { size: 13.333333in 7.5in; margin: 0; }
-  html, body { margin: 0; padding: 0; }
-  .ssr-player { display: block; height: auto; background: transparent; }
-  .ssr-stage { overflow: visible; }
-  #ssr-deck { position: static; transform: none; width: var(--ssr-width); height: auto; }
+  html, body { margin: 0 !important; padding: 0 !important; background: none !important; }
+  .ssr-player { position: static; height: auto; overflow: visible; background: none; }
+  .ssr-stage { position: static; overflow: visible; }
+  #ssr-deck { position: static; width: var(--ssr-width); height: auto; transform: none !important; }
   .ssr-slide, .ssr-slide[hidden] {
-    display: block;
+    display: block !important;
     position: relative;
-    width: var(--ssr-width);
-    height: var(--ssr-height);
+    transform: none !important;
     break-after: page;
     print-color-adjust: exact;
     -webkit-print-color-adjust: exact;
   }
-  .ssr-slide:last-child { break-after: auto; }
-  .ssr-controls { display: none; }
+  .ssr-slide:last-of-type { break-after: auto; }
+  .ssr-slide, .ssr-slide * { animation: none !important; transition: none !important; }
+  .ssr-slide [data-step] { opacity: 1 !important; visibility: visible !important; translate: none !important; }
+  .ssr-ui, .ssr-ov-hit { display: none !important; }
 }
