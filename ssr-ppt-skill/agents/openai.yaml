@@ -1,4 +1,4 @@
 interface:
   display_name: "SSR-PPT-SKILL"
-  short_description: "风格配方、中文排版与方向比较，制作有记忆点的 HTML 演示和原生可编辑 PPTX"
-  default_prompt: "使用 $ssr-ppt-skill 制作有记忆点的演示文稿：从风格配方出发改编视觉方向，嵌入设计字体，保留策划稿并交付 HTML 和可编辑 PPTX；需求明确时连续完成方向比较、代表页校准与实际预览验收。"
+  short_description: "内容提炼、图解与视觉设计，支持公司模板、离线 HTML 和原生可编辑 PPTX，保留策划与实际验收"
+  default_prompt: "使用 $ssr-ppt-skill：先组织内容、保留事实与条件，再选择图文表达和视觉方向。继承我的沟通偏好，需求明确时连续完成；遵守模板与交付范围，保留策划，实际预览并按对象的编辑要求验收 HTML／PPTX。"

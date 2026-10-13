@@ -14,6 +14,7 @@ Every image this writes must still be opened and looked at; numbers in report.js
 """
 import argparse
 import importlib
+from io import BytesIO
 import json
 import math
 import os
@@ -120,9 +121,42 @@ CAPTURE_CSS = """
 
 WAIT_ASSETS_JS = """async () => {
   await document.fonts.ready;
-  await Promise.all(Array.from(document.images).map(img => img.decode().catch(() => null)));
-  return document.fonts.status;
+  const svgImages = Array.from(document.querySelectorAll('svg image')).map(el => {
+    const img = new Image(); img.src = el.href.baseVal; return img;
+  });
+  const images = await Promise.all([...document.images, ...svgImages].map(async (img, index) => {
+    let error = null;
+    try { await img.decode(); } catch (e) { error = String(e); }
+    return {index, source: img.src.startsWith('data:') ? 'inline image' : img.src,
+            ok: !error && img.naturalWidth > 0 && img.naturalHeight > 0, error};
+  }));
+  return {fonts_status: document.fonts.status, images,
+          fonts: Array.from(document.fonts).map(f => ({family: f.family, status: f.status}))};
 }"""
+
+
+def check(name, status, detail="", required=True, **evidence):
+    return {"name": name, "status": status, "required": required, "detail": detail, **evidence}
+
+
+def checks_status(checks):
+    required = [c["status"] for c in checks if c["required"]]
+    for status in ("failed", "unsupported", "not_run"):
+        if status in required:
+            return status
+    return "passed" if required and all(s == "passed" for s in required) else "not_run"
+
+
+def write_report(report, out, strict=False):
+    report["automatic_status"] = checks_status(report["checks"])
+    report["manual_review"] = {
+        "status": "not_run", "required_for_delivery": True,
+        "detail": "View every final page; inspect content, visual quality and task-specific edits. "
+                  "Automatic checks do not prove target-office interaction or design quality."
+    }
+    (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    if strict and report["automatic_status"] != "passed":
+        raise SystemExit(1)
 
 
 def launch_browser(p, choice):
@@ -165,7 +199,8 @@ def cmd_html(args):
         page.on("pageerror", lambda e: report["page_errors"].append(str(e)))
         page.on("requestfailed", lambda r: report["failed_requests"].append(f"{r.url} {r.failure}"))
         page.goto(src.as_uri(), wait_until="load")
-        report["fonts_status"] = page.evaluate(WAIT_ASSETS_JS)
+        report["assets"] = page.evaluate(WAIT_ASSETS_JS)
+        report["fonts_status"] = report["assets"]["fonts_status"]
 
         info = page.evaluate("""() => {
           const deck = document.getElementById('ssr-deck');
@@ -239,7 +274,6 @@ def cmd_html(args):
 
     shots = sorted(slides_dir.glob("slide-*.png"))
     make_sheet(shots, out / "sheet.png")
-    (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     problems = report["console"] + report["page_errors"] + report["failed_requests"]
     print(f"browser: {report['browser']}  slides: {n}  canvas: {W}x{H}  fonts: {report['fonts_status']}")
     print(f"slides -> {slides_dir}")
@@ -251,6 +285,29 @@ def cmd_html(args):
     print(f"blocked external requests: {len(report['blocked_requests'])}  console/page errors: {len(problems)}")
     for line in (report["blocked_requests"] + problems)[:20]:
         print("  " + line)
+
+    report["checks"] = [
+        check("offline_resources", "failed" if report["blocked_requests"] or report["failed_requests"] else "passed"),
+        check("browser_errors", "failed" if report["console"] or report["page_errors"] else "passed"),
+        check("image_decode", "passed" if all(i["ok"] for i in report["assets"]["images"]) else "failed",
+              "HTML img and SVG image elements; inspect CSS backgrounds and crop quality visually too."),
+        check("font_load", "passed" if report["fonts_status"] == "loaded" and
+              all(f["status"] != "error" for f in report["assets"]["fonts"]) else "failed",
+              "Loading only; glyph coverage and fallback still require font checks and visual inspection."),
+        check("keyboard", "passed" if report.get("keyboard") and all(report["keyboard"].values())
+              else "failed" if report.get("keyboard") else "unsupported",
+              "SSRPlayer keyboard checks; use task-specific checks for a different player."),
+    ]
+    pr = report.get("print", {})
+    if args.no_pdf:
+        report["checks"].append(check("print", "not_run", "Skipped with --no-pdf; strict mode requires this check."))
+    elif "pages" not in pr:
+        report["checks"].append(check("print", "unsupported", "PyMuPDF needed for page count and dimensions."))
+    else:
+        ok = pr["pages"] == pr["expected_pages"] and all(
+            abs(a-b) <= 1 for a,b in zip(pr["page_pt"], pr["expected_pt"]))
+        report["checks"].append(check("print", "passed" if ok else "failed", **pr))
+    write_report(report, out, args.strict)
 
 
 # ---------------------------------------------------------------- PPTX
@@ -302,7 +359,7 @@ NS = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
 def font_inventory(pptx):
     """Typefaces actually set on slides and in the theme (latin vs East Asian)."""
     used = {"latin": set(), "ea": set()}
-    theme = {}
+    themes = {}
     with zipfile.ZipFile(pptx) as z:
         for name in z.namelist():
             if name.startswith("ppt/slides/slide") and name.endswith(".xml"):
@@ -311,14 +368,16 @@ def font_inventory(pptx):
                     for el in root.iter(f"{{{NS['a']}}}{kind}"):
                         if el.get("typeface"):
                             used[kind].add(el.get("typeface"))
-            elif name.startswith("ppt/theme/theme") and not theme:
+            elif name.startswith("ppt/theme/theme") and name.endswith(".xml"):
                 root = ET.fromstring(z.read(name))
+                theme = {}
                 for role in ("majorFont", "minorFont"):
                     el = root.find(f".//a:{role}", NS)
                     if el is not None:
                         theme[role] = {k: (el.find(f"a:{k}", NS).get("typeface") if el.find(f"a:{k}", NS) is not None else None)
                                        for k in ("latin", "ea")}
-    return {"slides_latin": sorted(used["latin"]), "slides_ea": sorted(used["ea"]), "theme": theme}
+                themes[name] = theme
+    return {"slides_latin": sorted(used["latin"]), "slides_ea": sorted(used["ea"]), "themes": themes}
 
 
 def inventory(pptx):
@@ -358,67 +417,217 @@ def inventory(pptx):
     return slides
 
 
-def edit_test(pptx, out_dir, soffice, width):
+def walk_shapes(shapes, parent=()):
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    for shape in shapes:
+        path = parent + (shape.shape_id,)
+        yield path, shape
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            yield from walk_shapes(shape.shapes, path)
+
+
+def locate_shape(prs, target):
+    if not 1 <= target["slide"] <= len(prs.slides) or not target["path"]:
+        raise IndexError(f"invalid slide or empty shape path: {target}")
+    shapes = prs.slides[target["slide"] - 1].shapes
+    for index, ident in enumerate(target["path"]):
+        shape = next((s for s in shapes if s.shape_id == ident), None)
+        if shape is None:
+            raise KeyError(f"shape not found: {target}")
+        if index < len(target["path"]) - 1:
+            if not hasattr(shape, "shapes"):
+                raise KeyError(f"path crosses a non-group shape: {target}")
+            shapes = shape.shapes
+    return shape
+
+
+def default_targets(prs):
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    targets = []
+    for number, slide in enumerate(prs.slides, 1):
+        text_parents = set()
+        for path, shape in walk_shapes(slide.shapes):
+            base = {"slide": number, "path": list(path)}
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                targets.append(dict(base, kind="move"))
+            if shape.has_text_frame and shape.text_frame.text.strip() and path[:-1] not in text_parents:
+                targets.append(dict(base, kind="text"))
+                text_parents.add(path[:-1])
+            if getattr(shape, "has_table", False):
+                targets.append(dict(base, kind="table", cell=[0, 0]))
+            if getattr(shape, "has_chart", False):
+                targets.append(dict(base, kind="chart"))
+            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                targets.append(dict(base, kind="picture"))
+    return targets
+
+
+def workbook_cells(chart):
+    part = chart.part.chart_workbook.xlsx_part
+    if part is None:
+        raise NotImplementedError("No embedded workbook; external-linked charts are not edited.")
+    return workbook_blob_cells(part.blob)
+
+
+def workbook_blob_cells(blob):
+    ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with zipfile.ZipFile(BytesIO(blob)) as z:
+        sheets = [n for n in z.namelist() if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")]
+        if len(sheets) != 1:
+            raise NotImplementedError("Only a single embedded worksheet is supported.")
+        shared = []
+        if "xl/sharedStrings.xml" in z.namelist():
+            for item in ET.fromstring(z.read("xl/sharedStrings.xml")).findall("s:si", ns):
+                shared.append("".join(item.itertext()))
+        result = {}
+        for cell in ET.fromstring(z.read(sheets[0])).findall(".//s:c", ns):
+            if cell.find("s:f", ns) is not None:
+                raise NotImplementedError("Formula-based workbooks require a dedicated edit test.")
+            value = cell.find("s:v", ns)
+            if cell.get("t") == "inlineStr":
+                result[cell.get("r")] = "".join(cell.find("s:is", ns).itertext())
+            elif value is not None:
+                result[cell.get("r")] = shared[int(value.text)] if cell.get("t") == "s" else float(value.text)
+        return result
+
+
+def chart_snapshot(chart):
+    supported = {"BAR_CLUSTERED", "COLUMN_CLUSTERED", "LINE"}
+    if chart.chart_type.name not in supported or len(chart.plots) != 1:
+        raise NotImplementedError("Automatic editing supports single-plot clustered bar/column and line charts.")
+    plot = chart.plots[0]
+    if plot.categories.depth != 1:
+        raise NotImplementedError("Multi-level categories require a dedicated test.")
+    categories = [c.label for c in plot.categories]
+    if any(not isinstance(c, str) for c in categories):
+        raise NotImplementedError("Date/numeric category axes require a dedicated test.")
+    series = [{"name": s.name, "values": list(s.values)} for s in plot.series]
+    cells = workbook_cells(chart)
+    # replace_data rebuilds the workbook. Only test a known, lossless table layout.
+    from pptx.chart.data import CategoryChartData
+    data = CategoryChartData()
+    data.categories = categories
+    for item in series:
+        data.add_series(item["name"], item["values"])
+    if not equivalent(cells, workbook_blob_cells(data.xlsx_blob)):
+        raise NotImplementedError("Nonstandard workbook layout/content requires a dedicated edit test.")
+    return {"categories": categories, "series": series, "workbook": cells}
+
+
+def structure(shape):
+    # IDs and endpoint bindings survive a move; this does not prove automatic line routing.
+    items = shape.shapes if hasattr(shape, "shapes") else [shape]
+    return [{"path": list(path), "type": int(s.shape_type),
+             "connections": [dict(el.attrib) for el in s._element.iter()
+                             if str(el.tag).split("}")[-1] in ("stCxn", "endCxn")]}
+            for path, s in walk_shapes(items)]
+
+
+def snapshot(shape, target):
+    kind = target["kind"]
+    if kind == "text":
+        return shape.text_frame.text
+    if kind == "table":
+        return shape.table.cell(*target.get("cell", [0, 0])).text
+    if kind == "chart":
+        return chart_snapshot(shape.chart)
+    if kind == "move":
+        return {"left": shape.left, "top": shape.top, "structure": structure(shape)}
+    if kind == "picture":
+        return [shape.crop_left, shape.crop_right, shape.crop_top, shape.crop_bottom]
+    raise ValueError(f"unknown edit kind: {kind}")
+
+
+def equivalent(actual, expected):
+    if isinstance(expected, (int, float)):
+        return isinstance(actual, (int, float)) and math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-10)
+    if isinstance(expected, dict):
+        return isinstance(actual, dict) and actual.keys() == expected.keys() and all(
+            equivalent(actual[k], v) for k,v in expected.items())
+    if isinstance(expected, list):
+        return isinstance(actual, list) and len(actual) == len(expected) and all(
+            equivalent(a,b) for a,b in zip(actual, expected))
+    return actual == expected
+
+
+def verify_edits(prs, records):
+    for record in records:
+        if record["status"] in ("unsupported", "failed"):
+            continue
+        try:
+            record["actual"] = snapshot(locate_shape(prs, record["target"]), record["target"])
+            record["status"] = "passed" if equivalent(record["actual"], record["expected"]) else "failed"
+        except (KeyError, IndexError, NotImplementedError) as error:
+            record["status"], record["detail"] = "failed", str(error)
+    return records
+
+
+def edit_test(pptx, out_dir, soffice=None, width=1600, targets=None):
     from pptx import Presentation
     from pptx.chart.data import CategoryChartData
+    from pptx.util import Inches
     copy = out_dir / "edit-test.pptx"
-    shutil.copyfile(pptx, copy)
-    prs = Presentation(copy)
-    done, touched = {}, set()
-    marker = "【编辑测试】"
-    for idx, slide in enumerate(prs.slides, 1):
-        for s in slide.shapes:
-            if "text" not in done and s.has_text_frame:
-                runs = [r for p in s.text_frame.paragraphs for r in p.runs if r.text.strip()]
+    if Path(pptx).resolve() == copy.resolve():
+        raise ValueError("Edit-test copy must differ from the source.")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    prs = Presentation(pptx)
+    selected = default_targets(prs) if targets is None else targets
+    identities = [(t["slide"], tuple(t["path"]), t["kind"], tuple(t.get("cell", []))) for t in selected]
+    if len(set(identities)) != len(identities):
+        raise ValueError("Duplicate edit targets; select each behavior on an object once.")
+    records = []
+    for number, target in enumerate(selected):
+        record = check(f"edit:{number+1}:{target['kind']}", "not_run", target=target)
+        records.append(record)
+        try:
+            shape = locate_shape(prs, target)
+            before = snapshot(shape, target)
+            record["before"] = before
+            kind = target["kind"]
+            if kind in ("text", "table"):
+                frame = shape.text_frame if kind == "text" else shape.table.cell(*target.get("cell", [0, 0])).text_frame
+                runs = [r for p in frame.paragraphs for r in p.runs]
+                marker = f" [E{number+1}]"
                 if runs:
                     runs[0].text += marker
-                    done["text"] = idx
-                    touched.add(idx)
-            if "table" not in done and getattr(s, "has_table", False) and s.has_table:
-                cell = s.table.cell(0, 0)
-                runs = [r for p in cell.text_frame.paragraphs for r in p.runs]
-                if runs:
-                    runs[0].text += "✓"
                 else:
-                    cell.text = "✓"
-                done["table"] = idx
-                touched.add(idx)
-            if "chart" not in done and getattr(s, "has_chart", False) and s.has_chart:
-                try:
-                    plot = s.chart.plots[0]
-                    cd = CategoryChartData()
-                    cd.categories = list(plot.categories)
-                    for k, ser in enumerate(plot.series):
-                        vals = list(ser.values)
-                        if k == 0:
-                            vals[0] = (vals[0] or 0) * 1.5 + 1
-                        cd.add_series(ser.name, vals)
-                    s.chart.replace_data(cd)
-                    done["chart"] = idx
-                    touched.add(idx)
-                except Exception as e:  # e.g. XY or multi-level category charts
-                    done["chart_skipped"] = f"slide {idx}: {e}"
+                    frame.paragraphs[0].add_run().text = marker
+                record["expected"] = frame.text
+            elif kind == "chart":
+                if not before["series"]:
+                    raise NotImplementedError("Empty chart.")
+                values = before["series"][0]["values"]
+                point = next((i for i,v in enumerate(values) if v is not None and math.isfinite(v)), None)
+                if point is None:
+                    raise NotImplementedError("No finite numeric point to edit.")
+                expected = json.loads(json.dumps(before))
+                value = round(values[point] + abs(values[point]) * 0.1 + 1, 6)
+                expected["series"][0]["values"][point] = value
+                expected["workbook"][f"B{point+2}"] = value
+                data = CategoryChartData()
+                data.categories = before["categories"]
+                for series in expected["series"]:
+                    data.add_series(series["name"], series["values"])
+                shape.chart.replace_data(data)
+                record["expected"] = expected
+            elif kind == "move":
+                shape.left += Inches(0.1)
+                record["expected"] = dict(before, left=before["left"] + Inches(0.1))
+            elif kind == "picture":
+                shape.crop_left = 0.1 if abs(shape.crop_left-0.1) > 0.001 else 0.05
+                record["expected"] = [shape.crop_left, *before[1:]]
+                record["detail"] = "Crop round-trip only; replacement and visual crop quality require inspection."
+        except NotImplementedError as error:
+            record["status"], record["detail"] = "unsupported", str(error)
+        except (KeyError, IndexError) as error:
+            record["status"], record["detail"] = "failed", str(error)
     prs.save(copy)
-
-    # Re-open and confirm the edits survived a save/load round trip.
-    prs = Presentation(copy)
-    verified = {}
-    if "text" in done:
-        verified["text"] = marker in "".join(
-            sh.text_frame.text for sh in prs.slides[done["text"] - 1].shapes if sh.has_text_frame)
-    if "table" in done:
-        verified["table"] = any("✓" in sh.table.cell(0, 0).text for sh in prs.slides[done["table"] - 1].shapes
-                                if getattr(sh, "has_table", False) and sh.has_table)
-    if "chart" in done:
-        verified["chart"] = any(sh.has_chart for sh in prs.slides[done["chart"] - 1].shapes
-                                if getattr(sh, "has_chart", False))
-    pngs = pptx_to_pngs(copy, out_dir / "edit-test", soffice, width)
-    keep = {f"slide-{i:02d}.png" for i in touched}
-    for pth in pngs:
-        if pth.name not in keep:
-            pth.unlink()
-    return {"edited": done, "verified_after_reload": verified,
-            "rendered": sorted(str(out_dir / "edit-test" / k) for k in keep)}
+    verify_edits(Presentation(copy), records)
+    rendered = pptx_to_pngs(copy, out_dir / "edit-test", soffice, width) if soffice else []
+    return {"copy": str(copy), "checks": records,
+            "selection": "explicit" if targets is not None else "one text per page/group, all tables/charts/groups/pictures",
+            "rendered": [str(p) for p in rendered],
+            "scope": "Library save/reload; manual edits, auto-connect and data-linked labels need task-specific checks."}
 
 
 def cmd_pptx(args):
@@ -435,9 +644,9 @@ def cmd_pptx(args):
         if report["inventory"] is None:
             report["edit_test"] = "skipped: python-pptx not installed"
         else:
-            report["edit_test"] = edit_test(src, out, soffice, args.width)
+            targets = json.loads(Path(args.edit_targets).read_text(encoding="utf-8")) if args.edit_targets else None
+            report["edit_test"] = edit_test(src, out, soffice, args.width, targets)
     make_sheet(pngs, out / "sheet.png")
-    (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"slides: {len(pngs)} -> {slides_dir}")
     print(f"sheet  -> {out / 'sheet.png'} (+ -gray, -blur)")
     print(f"fonts: {report['fonts']}")
@@ -445,7 +654,25 @@ def cmd_pptx(args):
         for c in report["inventory"]:
             print("  " + json.dumps(c, ensure_ascii=False))
     if "edit_test" in report:
-        print(f"edit test: {json.dumps(report['edit_test'], ensure_ascii=False)}")
+        edit = report["edit_test"]
+        if isinstance(edit, dict):
+            print(f"edit test: {checks_status(edit['checks'])}, {len(edit['checks'])} targets; details in report.json")
+        else:
+            print(f"edit test: {edit}")
+
+    expected_pages = len(report["inventory"]) if report["inventory"] is not None else None
+    render_status = ("unsupported" if expected_pages is None else
+                     "passed" if len(pngs) == expected_pages else "failed")
+    report["checks"] = [check("render", render_status, "Compare rendered pages with source slides.",
+                              expected=expected_pages, actual=len(pngs)),
+                        check("inventory", "passed" if report["inventory"] is not None else "unsupported")]
+    edit = report.get("edit_test")
+    if isinstance(edit, dict) and edit["checks"]:
+        report["checks"].extend(edit["checks"])
+    else:
+        report["checks"].append(check("edit_test", "not_run" if edit is None or isinstance(edit, dict) else "unsupported",
+                                      "No edit targets verified. Supply --edit-test and task-specific targets if needed."))
+    write_report(report, out, args.strict)
 
 
 # ---------------------------------------------------------------- CLI
@@ -460,6 +687,7 @@ def main():
     h.add_argument("--scale", type=float, default=1.25, help="device scale factor (1.25 -> 1600px wide)")
     h.add_argument("--browser", choices=["auto", "chromium", "chrome", "msedge"], default="auto")
     h.add_argument("--no-pdf", action="store_true", help="skip the print-to-PDF check")
+    h.add_argument("--strict", action="store_true", help="nonzero exit unless required automatic checks pass")
     h.set_defaults(func=cmd_html)
 
     x = sub.add_parser("pptx", help="render a PPTX through LibreOffice and inspect native objects")
@@ -468,6 +696,8 @@ def main():
     x.add_argument("--width", type=int, default=1600)
     x.add_argument("--soffice")
     x.add_argument("--edit-test", action="store_true", help="edit text/table/chart in a copy, reload and render")
+    x.add_argument("--edit-targets", help="JSON list of slide (1-based), shape-id path, kind, optional table cell")
+    x.add_argument("--strict", action="store_true", help="nonzero exit unless required automatic checks pass")
     x.set_defaults(func=cmd_pptx)
 
     s = sub.add_parser("sheet", help="contact sheet from PNG files or a directory")
@@ -488,6 +718,8 @@ def main():
         a.inputs, a.out, a.labels.split(",") if a.labels else None, a.height)))
 
     args = ap.parse_args()
+    if getattr(args, "edit_targets", None) and not args.edit_test:
+        ap.error("--edit-targets requires --edit-test")
     args.func(args)
 
 

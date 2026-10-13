@@ -1,0 +1,20 @@
+{
+  "title": "站点接入试点",
+  "date": "2026-09-30",
+  "planned": 7,
+  "live": 6,
+  "requested_gateways": 2,
+  "forecast_hours": 30,
+  "trend": {"categories": ["7 月", "8 月", "9 月"], "values": [2, 4, 6]},
+  "process": [
+    {"title": "门店", "detail": "提交补货申请"},
+    {"title": "规则引擎", "detail": "按库存阈值校验"},
+    {"title": "仓库", "detail": "校验通过后备货"}
+  ],
+  "options": [
+    {"name": "方案 A", "cost": "6 万元", "weeks": "2 周", "condition": "仅覆盖当前站点"},
+    {"name": "方案 B", "cost": "8 万元", "weeks": "3 周", "condition": "扩展需另配网关"},
+    {"name": "方案 C", "cost": "11 万元", "weeks": "5 周", "condition": "扩展需重新测算"}
+  ],
+  "notice": "全部为虚构教学数据；预测收益未实测，申请资源尚未获批。"
+}
