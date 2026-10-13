@@ -94,11 +94,14 @@ python -m pip install fonttools brotli playwright pillow pymupdf python-pptx
 
 [双格式样例](ssr-ppt-skill/examples/dual-format/README.md) 共享一份虚构数据生成 4 页 HTML 和原生 PPTX，含长中文、分组流程、形状矩阵、统计图、原生表格和独立图片。它是可复现的有限路径，不是通用 HTML 转 PPTX 引擎。
 
+[教学案例](ssr-ppt-skill/references/worked-examples.md) 展示科研资源、零售补货、产品比较和培训须知的材料提炼、表达选择、页面与检查点，包含两张可直接查看的 SVG 页面，以及“保留文字更清楚”的完整案例。
+
 本次在 Codex／Windows 中验证：
 - 9 项回归测试通过，含损坏内联图片、减少动态效果、分组文字、表格原有勾号、图表未改值、未支持图型和多主题／母版保留。
 - 4 页 HTML：无外部请求、无控制台或页面错误，键盘与网址页码通过，打印 4 页且尺寸正确。
 - 4 页 PPTX：重新读取与 LibreOffice 渲染，11 个指定编辑目标保存重开后符合预期，包括组内文字、矩阵、图表工作表、图片裁剪和表格。
 - 逐页查看 HTML、PPTX 和编辑副本；修正大数字间距、无依据的方案高亮及默认阴影。
+- 补充三组新材料的双格式检查，8 个指定编辑目标通过；修正教学样例里无依据的周报发送方，并重新验证受影响页面。观察与限制见 [新材料检查记录](tests/design-review.md)。
 
 [维护测试说明](tests/README.md) 记录命令、版本与证据范围。历史版本的其他样稿和模型评价不作为本次验收证据。当前没有 PowerPoint／WPS 实机编辑、多模型效果对照或所有风格的验证；不承诺模型间能力差距被消除。
 

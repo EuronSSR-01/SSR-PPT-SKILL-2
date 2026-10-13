@@ -162,7 +162,7 @@ def generate(out):
     arrow(group.shapes, svg, 610, 500, 220, 500, arrow_end=False)
     arrow(group.shapes, svg, 220, 500, 220, 435)
     text(group.shapes, svg, "不通过 → 门店补充信息", 280, 525, 450, 22, MUTED)
-    text(group.shapes, svg, "规则引擎 → 运营\n仅发送周报", 870, 490, 320, 22, MUTED)
+    text(group.shapes, svg, "运营接收周报\n不参与本次审批", 870, 490, 320, 22, MUTED)
     target(group, "move")
 
     # 3. A comparison matrix made of grouped shapes, not a mandatory native table.
