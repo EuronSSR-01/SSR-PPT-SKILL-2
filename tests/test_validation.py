@@ -3,6 +3,7 @@ import copy
 import importlib.util
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -13,6 +14,7 @@ from lxml import etree as ET
 from PIL import Image
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData, XyChartData
+from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.util import Inches, Pt
@@ -396,6 +398,80 @@ class TextDensityTests(unittest.TestCase):
             self.assertNotIn("text", {c["name"] for c in report["checks"]})                 # never a pass/fail check
 
 
+def lines_pdf(path, pages=1):
+    """A 960x540 pt PDF whose first page has a label crossed by a line, plus an underline, a strikethrough
+    and a line hidden behind a filled label box, none of which should be reported."""
+    pm = preview.pymupdf_or_none()
+    doc = pm.open()
+    for _ in range(pages):
+        doc.new_page(width=960, height=540)
+    page = doc[0]
+    page.insert_text((100, 100), "Crossed label", fontname="helv", fontsize=20)
+    page.draw_line((80, 93), (400, 93), color=(0, 0.5, 0), width=1.2)               # through the glyphs
+    page.insert_text((100, 200), "Underlined note", fontname="helv", fontsize=20)
+    page.draw_line((100, 203), (250, 203), color=(0, 0, 0), width=1)                # below the baseline
+    width = pm.get_text_length("Old price", fontname="helv", fontsize=20)
+    page.insert_text((100, 300), "Old price", fontname="helv", fontsize=20)
+    page.draw_line((100, 293), (100 + width, 293), color=(0, 0, 0), width=1)        # strikethrough
+    page.draw_line((80, 393), (400, 393), color=(0, 0, 0), width=1.2)               # painted first ...
+    page.draw_rect(pm.Rect(95, 378, 260, 406), color=None, fill=(1, 1, 1))          # ... then covered
+    page.insert_text((100, 400), "Label on a line", fontname="helv", fontsize=20)
+    doc.save(path)
+    doc.close()
+
+
+@unittest.skipUnless(preview.pymupdf_or_none(), "PyMuPDF is needed to read PDFs")
+class LineThroughTextTests(unittest.TestCase):
+    def test_only_a_visible_line_through_glyphs_is_reported(self):
+        pm = preview.pymupdf_or_none()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "lines.pdf"
+            lines_pdf(path)
+            doc = pm.open(path)
+            findings = preview.pdf_layout(doc[0], pm)
+            doc.close()
+        self.assertEqual([(f["kind"], f["severity"], f["text"]) for f in findings],
+                         [("line_through_text", "warning", "Crossed label")])
+
+    def test_pptx_check_uses_supplied_pdf(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            prs = Presentation()
+            prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+            for text in ("第一页", "第二页"):
+                prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_textbox(0, 0, Inches(4), Inches(1)).text = text
+            prs.save(work / "deck.pptx")
+            lines_pdf(work / "deck.pdf", pages=2)
+            newer = (work / "deck.pptx").stat().st_mtime + 60
+            os.utime(work / "deck.pdf", (newer, newer))
+            base = [sys.executable, str(SCRIPTS / "preview.py"), "pptx", str(work / "deck.pptx"), "--edit-test",
+                    "--soffice", str(work / "no-such-soffice.exe"), "--strict"]
+            result = subprocess.run(base + ["--pdf", str(work / "deck.pdf"), "--out", str(work / "review")],
+                                    capture_output=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            report = json.loads((work / "review/report.json").read_text(encoding="utf-8"))
+            checks = {c["name"]: c["status"] for c in report["checks"]}
+            self.assertEqual((checks["render"], checks["layout"]), ("passed", "passed"))  # a warning does not fail
+            self.assertTrue(report["renderer"].startswith("supplied PDF"))
+            self.assertEqual([f["kind"] for f in report["layout"][0]["findings"]], ["line_through_text"])
+            self.assertFalse(report["pdf"]["older_than_pptx"])
+            self.assertTrue((work / "review/slides/slide-02.png").exists())
+
+            older = (work / "deck.pptx").stat().st_mtime - 60
+            os.utime(work / "deck.pdf", (older, older))
+            stale = subprocess.run(base + ["--pdf", str(work / "deck.pdf"), "--out", str(work / "stale")],
+                                   capture_output=True, timeout=120)
+            self.assertIn("older than the PPTX", stale.stderr.decode("utf-8", errors="replace"))
+            self.assertTrue(json.loads((work / "stale/report.json").read_text(encoding="utf-8"))["pdf"]["older_than_pptx"])
+
+            lines_pdf(work / "three.pdf", pages=3)                                    # not exported from this deck
+            wrong = subprocess.run(base + ["--pdf", str(work / "three.pdf"), "--out", str(work / "wrong")],
+                                   capture_output=True, timeout=120)
+            self.assertEqual(wrong.returncode, 1)
+            report = json.loads((work / "wrong/report.json").read_text(encoding="utf-8"))
+            self.assertEqual({c["name"]: c["status"] for c in report["checks"]}["render"], "failed")
+
+
 qn_ea = "{http://schemas.openxmlformats.org/drawingml/2006/main}ea"
 qn_effect = "{http://schemas.openxmlformats.org/drawingml/2006/main}effectLst"
 
@@ -433,6 +509,19 @@ class PptxLayoutTests(unittest.TestCase):
         for r, row in enumerate(rows):
             for c, value in enumerate(row):
                 grid.cell(r, c).text = value
+        lines = prs.slides.add_slide(prs.slide_layouts[6])
+        box(lines, 0.8, 0.6, 5, "被线穿过的标签", 20)
+        lines.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(0.5), Inches(0.87), Inches(6), Inches(0.87))
+        lines.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(0.5), Inches(2.27), Inches(6), Inches(2.27))
+        label = lines.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.8), Inches(2.0), Inches(3), Inches(0.55))
+        label.fill.solid()                                                     # painted over the line: hidden
+        label.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        label.text_frame.text = "盖住连线的标签"
+        label.text_frame.paragraphs[0].runs[0].font.color.rgb = RGBColor(0x1A, 0x1A, 0x1A)
+        box(lines, 0.8, 3.4, 5, "删除线的旧价格", 20)
+        lines.shapes[-1].text_frame.paragraphs[0].runs[0].font._rPr.set("strike", "sngStrike")
+        box(lines, 0.8, 4.6, 5, "下划线的说明", 20)
+        lines.shapes[-1].text_frame.paragraphs[0].runs[0].font.underline = True
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "layout.pptx"
             prs.save(src)
@@ -443,6 +532,8 @@ class PptxLayoutTests(unittest.TestCase):
                 self.assertIn(kind, kinds)
             self.assertEqual(layout[1]["findings"], [])
             self.assertEqual(layout[2]["findings"], [])
+            self.assertEqual([(f["kind"], f["severity"], f["text"]) for f in layout[3]["findings"]],
+                             [("line_through_text", "warning", "被线穿过的标签")])
 
 
 if __name__ == "__main__":

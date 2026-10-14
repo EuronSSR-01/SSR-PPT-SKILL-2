@@ -118,7 +118,7 @@ HTML 内联 `assets/player.css` 与 `player.js`，按许可嵌入所需字体和
 | 能力 | 具备时 | 不具备时 |
 |---|---|---|
 | 浏览器：Playwright＋Chrome／Edge／Chromium，或 agent 自带的浏览器工具 | `preview.py html` 截图、交互、打印与版面检查 | 只能做 HTML 结构检查，截图、交互和版面检查标为未执行 |
-| LibreOffice＋PyMuPDF | `preview.py pptx` 渲染 PPTX 并做版面检查 | `preview.py pptx --edit-test` 仍会做对象清点、字体与编辑测试；渲染和版面检查标为未执行 |
+| LibreOffice＋PyMuPDF | `preview.py pptx` 渲染 PPTX 并做版面检查 | 有 PyMuPDF 时，用 `--pdf` 传入 WPS／PowerPoint 由最终 PPTX 导出的 PDF 做渲染与版面检查；都没有时，`preview.py pptx --edit-test` 仍会做对象清点、字体与编辑测试，渲染和版面检查标为未执行 |
 | python-pptx | 新建 PPTX（默认路线，借助 `scripts/pptx_kit.py` 的基础操作）、模板修改、编辑测试 | 用已安装的其他原生库，例如 PptxGenJS |
 | Node.js＋PptxGenJS | 新建 PPTX 的另一选择 | 不必安装 |
 

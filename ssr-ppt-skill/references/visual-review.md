@@ -68,7 +68,9 @@ python scripts/preview.py html build/index.html --out build/review/html --strict
 python scripts/preview.py pptx build/deck.pptx --out build/review/pptx --edit-test --edit-targets build/edit-targets.json --strict
 ```
 
-脚本生成逐页 PNG、总览、灰度／模糊图、版面检查标注图、报告和独立测试副本。打开看过才算视觉检查。版面检查的错误必须处理；警告逐条看图判断，确认无误的写明理由。
+没有 LibreOffice 时，PPTX 命令加 `--pdf <由最终 PPTX 导出的 PDF>`，见 [pptx.md](pptx.md)。
+
+脚本生成逐页 PNG、总览、灰度／模糊图、版面检查标注图、报告和独立测试副本。打开看过才算视觉检查。版面检查的错误必须处理；警告（包括线条穿过文字）逐条看图判断，确认无误的写明理由。
 
 两个命令都会列出每页正文字数（不含标题、表格和页脚区）。图示优先时加 `--visual-first`，脚本会指出超过约 60 字的单段文字，以及总字数超过约 60 字的文字卡片或列表（西文一个词按 2 字计）。这只是复查线索，不算通过或失败：能转图的转图；确需保留的写明是哪部分、为什么；不要靠删条件降字数。
 

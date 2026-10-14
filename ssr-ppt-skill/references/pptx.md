@@ -41,7 +41,7 @@ PptxGenJS 的已知要点（4.0.1 实测）：
 - 默认 `LAYOUT_16x9` 只有 10×5.625 英寸；要 13⅓×7.5 英寸须设 `pptx.layout = 'LAYOUT_WIDE'`。
 - `scripts/preview.py` 的图表自动编辑测试只接受 python-pptx 的内嵌工作表布局，PptxGenJS 生成的图表会如实标为 `unsupported`。图表的数据编辑是必需项时，二选一：用 python-pptx 生成该图表；或在 WPS／PowerPoint 中实际修改数据、保存重开并记录结果。不能把 `unsupported` 当作通过。
 
-渲染可用目标 Office、WPS 或 LibreOffice＋PyMuPDF。字体度量和排版可能不同，报告实际渲染器，不把 LibreOffice 等同于 PowerPoint／WPS 实机验收。LibreOffice 渲染有两个已知差异，看图时不要误判：
+渲染可用目标 Office、WPS 或 LibreOffice＋PyMuPDF。字体度量和排版可能不同，报告实际渲染器，不把 LibreOffice 等同于 PowerPoint／WPS 实机验收。没有 LibreOffice 时，可用 `preview.py pptx --pdf <PDF>` 传入 WPS、PowerPoint 等导出的 PDF，生成逐页图并做版面检查；PDF 必须由同一份最终 PPTX 导出，PPTX 改过后重新导出。报告记录两者的哈希，PDF 比 PPTX 旧时给出警告。LibreOffice 渲染有两个已知差异，看图时不要误判：
 - 会自动在汉字与西文、数字之间加间距，叠加手动空格后显得偏宽；PowerPoint 不会这样显示。
 - 西文字体本身含汉字时会直接用它显示中文，所以东亚字体缺失的问题在 LibreOffice 中看不出来，要以报告里的字体清单为准。
 
@@ -101,9 +101,9 @@ python scripts/preview.py pptx build/deck.pptx --out build/review/pptx --edit-te
 - 独立图片裁剪参数改变；
 - 单绘图区、单层字符串类别的簇状条形／柱形／普通折线图：修改数值，核对类别、系列、缓存与标准内嵌工作表。其他图型、外部链接、非标准工作表标为 `unsupported`，补专门测试；
 - 最终与测试副本渲染、所有主题的字体清单。
-- 在 LibreOffice 渲染结果上做版面检查，有问题的页另存标注图到 `layout/`：
+- 在渲染结果（LibreOffice，或 `--pdf` 传入的 PDF）上做版面检查，有问题的页另存标注图到 `layout/`：
   - 错误：文字超出页面、文字互相重叠。
-  - 警告：末行只剩一个字、字号小于 9pt、疑似占位文字。
+  - 警告：末行只剩一个字、字号小于 9pt、疑似占位文字、线条穿过文字。线条穿字逐字判断：后画的填充形状挡住的线、贴合整段文字的删除线、文字下方的下划线不算；看图确认，有意的设计可以保留。
   - 没有对比度检查（拿不到背景）。WPS／PowerPoint 的文字度量可能不同，换行位置以目标应用为准。
 
 脚本不自动验证 Office 拖动节点后连线跟随、图外手写数值联动、图片替换、插行列、动画、字形覆盖或审美质量。所需但未测标 `not_run`，工具做不到标 `unsupported`，不能都记为通过。

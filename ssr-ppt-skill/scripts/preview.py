@@ -3,7 +3,8 @@
 
   preview.py html  deck.html  --out DIR   per-slide PNGs (fully revealed), console/network/offline checks,
                                           keyboard test, small-viewport shot, print PDF, contact sheets
-  preview.py pptx  deck.pptx  --out DIR   LibreOffice -> PDF -> PNGs, native object inventory, fonts,
+  preview.py pptx  deck.pptx  --out DIR   LibreOffice -> PDF -> PNGs (or --pdf FILE exported from the deck by
+                                          WPS/PowerPoint), layout check, native object inventory, fonts,
                                           optional --edit-test on a copy, contact sheets
   preview.py sheet PNGS|DIR   --out FILE  contact sheet plus -gray and -blur variants
   preview.py compare A B ...  --out FILE  images side by side for comparing directions
@@ -12,10 +13,11 @@ html and pptx also report body text per slide; with --visual-first they point at
 boxes of points that might become a chart or diagram (hints, not a pass/fail check).
 
 Dependencies: Pillow; html needs playwright (bundled Chromium or installed Chrome/Edge);
-pptx needs LibreOffice and PyMuPDF, and python-pptx for the inventory and --edit-test.
+pptx needs PyMuPDF and LibreOffice (or --pdf), and python-pptx for the inventory and --edit-test.
 Every image this writes must still be opened and looked at; numbers in report.json are only hints.
 """
 import argparse
+import hashlib
 import importlib
 from io import BytesIO
 import json
@@ -604,11 +606,102 @@ def find_soffice(explicit):
 
 
 PLACEHOLDER = re.compile(r"lorem ipsum|\bTODO\b|\bTBD\b|X{3,}|占位|待补充|待填写|此处填写|示例文字", re.I)
+SYMBOLS = re.compile(r"^[\W_]+$")
+
+
+def thin_segments(drawings, max_width=6.0):
+    """Straight strokes no wider than max_width, as (x0, y0, x1, y1) with the drawing's paint order.
+    Hairline-thin filled rectangles count too: some renderers draw rules that way."""
+    for d in drawings:
+        if d.get("color") is not None and d.get("type") in ("s", "fs") and (d.get("width") or 0) <= max_width:
+            for item in d["items"]:
+                if item[0] == "l":
+                    yield (item[1].x, item[1].y, item[2].x, item[2].y), d["seqno"]
+                elif item[0] == "re":
+                    r = item[1]
+                    for edge in ((r.x0, r.y0, r.x1, r.y0), (r.x1, r.y0, r.x1, r.y1),
+                                 (r.x0, r.y1, r.x1, r.y1), (r.x0, r.y0, r.x0, r.y1)):
+                        yield edge, d["seqno"]
+        if d.get("fill") is not None and d.get("type") in ("f", "fs"):
+            r = d["rect"]
+            if r.height <= 2.5 and r.width > 8:
+                yield (r.x0, (r.y0 + r.y1) / 2, r.x1, (r.y0 + r.y1) / 2), d["seqno"]
+            elif r.width <= 2.5 and r.height > 8:
+                yield ((r.x0 + r.x1) / 2, r.y0, (r.x0 + r.x1) / 2, r.y1), d["seqno"]
+
+
+def segment_hits(seg, box):
+    """Whether the segment passes through the box (Liang-Barsky clipping)."""
+    px, py, qx, qy = seg
+    dx, dy = qx - px, qy - py
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, px - box[0]), (dx, box[2] - px), (-dy, py - box[1]), (dy, box[3] - py)):
+        if p == 0:
+            if q < 0:
+                return False
+        elif p < 0:
+            t0 = max(t0, q / p)
+        else:
+            t1 = min(t1, q / p)
+    return t0 < t1
+
+
+def glyph_core(bbox, size):
+    """The middle of a glyph cell: line-spacing slack, side bearings and the under/over-line zones removed."""
+    x0, y0, x1, y1 = bbox
+    inset = max(0.0, (y1 - y0 - size) / 2)
+    y0, y1 = y0 + inset, y1 - inset
+    dx, dy = max(0.5, (x1 - x0) * 0.15), (y1 - y0) * 0.25
+    return x0 + dx, y0 + dy, x1 - dx, y1 - dy
+
+
+def lines_through_text(page, flags):
+    """Thin drawn lines that run through the middle of glyphs, as (text, span bbox). A filled shape painted
+    after the line over the glyph hides it; a horizontal stroke spanning exactly the run is a strikethrough."""
+    drawings = page.get_drawings()
+    segments = list(thin_segments(drawings))
+    if not segments:
+        return []
+    fills = [(d["seqno"], d["rect"]) for d in drawings if d.get("fill") is not None]
+
+    def hidden(core, seq):
+        return any(s > seq and r.x0 <= core[0] and r.y0 <= core[1] and r.x1 >= core[2] and r.y1 >= core[3]
+                   for s, r in fills)
+
+    def strikethrough(seg, span_box):
+        return (abs(seg[1] - seg[3]) < 0.1 and abs(min(seg[0], seg[2]) - span_box[0]) < 1.5
+                and abs(max(seg[0], seg[2]) - span_box[2]) < 1.5)
+
+    hits = []
+    for block in page.get_text("rawdict", flags=flags)["blocks"]:
+        if block.get("type") != 0:
+            continue
+        for span in (s for line in block["lines"] for s in line["spans"]):
+            text = "".join(c["c"] for c in span["chars"]).strip()
+            if not text or SYMBOLS.match(text):
+                continue
+            sx0, sy0, sx1, sy1 = span["bbox"]
+            near = [(seg, seq) for seg, seq in segments
+                    if min(seg[0], seg[2]) <= sx1 and max(seg[0], seg[2]) >= sx0
+                    and min(seg[1], seg[3]) <= sy1 and max(seg[1], seg[3]) >= sy0
+                    and not strikethrough(seg, span["bbox"])]
+            crossed = False
+            for ch in span["chars"]:
+                if not near or crossed:
+                    break
+                if not ch["c"].strip() or SYMBOLS.match(ch["c"]):
+                    continue
+                core = glyph_core(ch["bbox"], span["size"])
+                crossed = any(segment_hits(seg, core) and not hidden(core, seq) for seg, seq in near)
+            if crossed:
+                hits.append((text, span["bbox"]))
+    return hits
 
 
 def pdf_layout(page, pm):
     """Text geometry on a rendered PPTX page, in points: text off the page, text over other text,
-    a last line of about one character, tiny text and placeholders. Backgrounds are not known, so no contrast."""
+    a last line of about one character, tiny text, placeholders and drawn lines through text.
+    Backgrounds are not known, so no contrast."""
     flags = getattr(pm, "TEXTFLAGS_DICT", 0) & ~getattr(pm, "TEXT_MEDIABOX_CLIP", 64)  # keep text past the edge
     width, height = page.rect.width, page.rect.height
     findings, spans = [], []
@@ -656,34 +749,36 @@ def pdf_layout(page, pm):
 
     # Compare every pair of spans: text extraction may merge overlapping boxes into one block or line.
     # Neighbouring spans and consecutive lines only touch; em-box height ignores line-spacing slack.
-    symbols = re.compile(r"^[\W_]+$")
     for i, (bi, li, a) in enumerate(spans):
-        if symbols.match(a["text"].strip()):
+        if SYMBOLS.match(a["text"].strip()):
             continue
         A = em_box(a)
         for bj, lj, b in spans[i + 1:]:
-            if symbols.match(b["text"].strip()):
+            if SYMBOLS.match(b["text"].strip()):
                 continue
             B = em_box(b)
             if min(A[2], B[2]) - max(A[0], B[0]) > 2 and min(A[3], B[3]) - max(A[1], B[1]) > 2:
                 add("text_overlap", "error", a["text"], a["bbox"], f"Overlaps “{b['text'].strip()[:40]}”.")
                 break
+
+    for text, bbox in lines_through_text(page, flags):
+        add("line_through_text", "warning", text, bbox,
+            "A drawn line runs through this text; move the line or the label, or give the label a background. "
+            "An intentional strike or decoration can stay.")
     return findings
 
 
-def pptx_to_pngs(pptx, out_dir, soffice, width, layout=None):
+def sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def pdf_to_pngs(pdf, out_dir, width, layout=None):
+    """One PNG per PDF page; with layout, also the layout findings of each page."""
     pm = pymupdf_or_none() or sys.exit("missing dependency PyMuPDF: python -m pip install pymupdf")
     out_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory() as tmp:
-        profile = Path(tmp, "profile").resolve().as_uri()
-        cmd = [soffice, f"-env:UserInstallation={profile}", "--headless", "--norestore",
-               "--convert-to", "pdf", "--outdir", tmp, str(pptx)]
-        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
-        pdf = Path(tmp, Path(pptx).stem + ".pdf")
-        if not pdf.exists():
-            raise RuntimeError(f"LibreOffice did not produce a PDF for {pptx}")
-        doc = pm.open(pdf)
-        paths = []
+    doc = pm.open(pdf)
+    paths = []
+    try:
         for i, page in enumerate(doc):
             zoom = width / page.rect.width
             pix = page.get_pixmap(matrix=pm.Matrix(zoom, zoom))
@@ -692,8 +787,22 @@ def pptx_to_pngs(pptx, out_dir, soffice, width, layout=None):
             paths.append(path)
             if layout is not None:
                 layout.append({"slide": i + 1, "scale": zoom, "findings": pdf_layout(page, pm)})
+    finally:
         doc.close()
     return paths
+
+
+def pptx_to_pngs(pptx, out_dir, soffice, width, layout=None):
+    pymupdf_or_none() or sys.exit("missing dependency PyMuPDF: python -m pip install pymupdf")
+    with tempfile.TemporaryDirectory() as tmp:
+        profile = Path(tmp, "profile").resolve().as_uri()
+        cmd = [soffice, f"-env:UserInstallation={profile}", "--headless", "--norestore",
+               "--convert-to", "pdf", "--outdir", tmp, str(pptx)]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+        pdf = Path(tmp, Path(pptx).stem + ".pdf")
+        if not pdf.exists():
+            raise RuntimeError(f"LibreOffice did not produce a PDF for {pptx}")
+        return pdf_to_pngs(pdf, out_dir, width, layout)
 
 
 NS = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
@@ -1064,24 +1173,40 @@ def cmd_pptx(args):
     slides_dir = out / "slides"
     if slides_dir.exists():
         shutil.rmtree(slides_dir)
-    # Without LibreOffice or PyMuPDF, rendering and the layout check are reported as not_run;
+    # Pages come from LibreOffice, or from --pdf: a PDF exported from this PPTX by WPS, PowerPoint or another
+    # renderer. Without either (or without PyMuPDF), rendering and the layout check are reported as not_run;
     # the inventory, font report and edit test still run.
     soffice = find_soffice(args.soffice)
-    can_render = bool(soffice) and pymupdf_or_none() is not None
+    has_pm = pymupdf_or_none() is not None
+    pdf = Path(args.pdf).resolve() if args.pdf else None
+    can_render = has_pm and bool(pdf or soffice)
     layout, pngs, render_note, render_failed = [], [], None, False
     if not can_render:
-        render_note = ("LibreOffice not found" if not soffice else "PyMuPDF not installed") + \
-            "; rendering and the layout check were not run (inventory, fonts and edit test still run)."
+        render_note = ("PyMuPDF not installed" if not has_pm else "LibreOffice not found") + \
+            "; rendering and the layout check were not run (inventory, fonts and edit test still run)." + \
+            ("" if not has_pm else " Pass --pdf with a PDF exported from this PPTX to run them.")
         print("warning: " + render_note, file=sys.stderr)
     else:
         try:
-            pngs = pptx_to_pngs(src, slides_dir, soffice, args.width, layout)
+            pngs = (pdf_to_pngs(pdf, slides_dir, args.width, layout) if pdf else
+                    pptx_to_pngs(src, slides_dir, soffice, args.width, layout))
         except (OSError, subprocess.SubprocessError, RuntimeError) as error:
             render_note, render_failed, layout = f"rendering failed: {error}", True, []
             print("warning: " + render_note, file=sys.stderr)
-    report = {"file": str(src), "renderer": "LibreOffice (approximation of PowerPoint)" if pngs else None,
+    renderer = f"supplied PDF {pdf.name}" if pdf else "LibreOffice (approximation of PowerPoint)"
+    report = {"file": str(src), "renderer": renderer if pngs else None,
               "render_note": render_note, "slides": len(pngs), "fonts": font_inventory(src),
               "inventory": inventory(src), "layout": layout, "text": pptx_text(src, args.visual_first)}
+    if pdf:
+        # The checks only cover the version that was exported: record both files so they can be matched.
+        stale = pdf.stat().st_mtime < src.stat().st_mtime
+        report["pdf"] = {"file": str(pdf), "sha256": sha256(pdf), "pptx_sha256": sha256(src),
+                         "older_than_pptx": stale}
+        if stale:
+            warning = ("the PDF is older than the PPTX: export it again from the final file, "
+                       "or confirm it matches before relying on these checks.")
+            render_note = report["render_note"] = f"{render_note} {warning}" if render_note else warning
+            print("warning: " + warning, file=sys.stderr)
     layout_dir = out / "layout"
     if layout_dir.exists():
         shutil.rmtree(layout_dir)
@@ -1096,7 +1221,7 @@ def cmd_pptx(args):
             report["edit_test"] = "skipped: python-pptx not installed"
         else:
             targets = json.loads(Path(args.edit_targets).read_text(encoding="utf-8")) if args.edit_targets else None
-            report["edit_test"] = edit_test(src, out, soffice if can_render else None, args.width, targets)
+            report["edit_test"] = edit_test(src, out, soffice if soffice and has_pm else None, args.width, targets)
     if pngs:
         make_sheet(pngs, out / "sheet.png")
         print(f"slides: {len(pngs)} -> {slides_dir}")
@@ -1139,8 +1264,10 @@ def cmd_pptx(args):
         report["checks"].append(check(
             "layout", "failed" if layout_errors else "passed",
             f"{layout_errors} errors (outside slide, overlapping text), {layout_warnings} warnings "
-            "(orphan line, small font, placeholder). Measured on the LibreOffice rendering; "
-            "PowerPoint/WPS text metrics can differ. No contrast check for PPTX.",
+            "(orphan line, small font, placeholder, line through text). "
+            + ("Measured on the supplied PDF; it covers only the version that was exported. " if pdf else
+               "Measured on the LibreOffice rendering; PowerPoint/WPS text metrics can differ. ")
+            + "No contrast check for PPTX.",
             errors=layout_errors, warnings=layout_warnings))
     else:
         report["checks"].append(check("layout", "not_run", "Needs a rendering; " + (render_note or "")))
@@ -1173,11 +1300,14 @@ def main():
     h.add_argument("--visual-first", action="store_true", help=VISUAL_FIRST_HELP)
     h.set_defaults(func=cmd_html)
 
-    x = sub.add_parser("pptx", help="render a PPTX through LibreOffice and inspect native objects")
+    x = sub.add_parser("pptx", help="render a PPTX through LibreOffice (or check a PDF exported from it) "
+                                    "and inspect native objects")
     x.add_argument("input")
     x.add_argument("--out", required=True)
     x.add_argument("--width", type=int, default=1600)
     x.add_argument("--soffice")
+    x.add_argument("--pdf", help="use this PDF, exported from the same final PPTX by WPS, PowerPoint or another "
+                                 "renderer, for the pages and the layout check instead of LibreOffice")
     x.add_argument("--edit-test", action="store_true", help="edit text/table/chart in a copy, reload and render")
     x.add_argument("--edit-targets", help="JSON list of slide (1-based), shape-id path, kind, optional table cell")
     x.add_argument("--strict", action="store_true", help="nonzero exit unless required automatic checks pass")
@@ -1204,6 +1334,8 @@ def main():
     args = ap.parse_args()
     if getattr(args, "edit_targets", None) and not args.edit_test:
         ap.error("--edit-targets requires --edit-test")
+    if getattr(args, "pdf", None) and not Path(args.pdf).is_file():
+        ap.error(f"--pdf: no such file {args.pdf}")
     args.func(args)
 
 

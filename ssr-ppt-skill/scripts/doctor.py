@@ -154,7 +154,9 @@ def routes(r):
         "html_review": "preview.py html: screenshots, interaction, print and layout checks" if html_check else
                        "missing: playwright and a Chromium-family browser; HTML review limited to structure",
         "pptx_render": "preview.py pptx: LibreOffice -> PDF -> PNG, plus layout check" if render else
-                       "missing: LibreOffice and/or PyMuPDF; render and layout check reported as not_run",
+                       "no LibreOffice: pass preview.py pptx --pdf with a PDF exported from the final PPTX "
+                       "(WPS/PowerPoint) for pages and the layout check" if pkg["pymupdf"] else
+                       "missing: PyMuPDF (and LibreOffice); render and layout check reported as not_run",
         "pptx_edit_test": ("missing: python-pptx" if not pkg["python-pptx"] else
                            "preview.py pptx --edit-test" if render else
                            "preview.py pptx --edit-test (structure, fonts and edit test only; no rendering)"),

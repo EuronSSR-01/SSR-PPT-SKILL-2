@@ -8,7 +8,7 @@
 python -m unittest discover -s tests -v
 ```
 
-共 19 项。不设置浏览器时运行 15 项库层测试（LibreOffice 渲染测试在未安装时跳过），4 项浏览器测试显式跳过。要验证浏览器行为，在可启动本机浏览器的环境中设置：
+共 21 项。不设置浏览器时运行 17 项库层测试（LibreOffice 渲染测试在未安装时跳过，读取 PDF 的测试在没有 PyMuPDF 时跳过），4 项浏览器测试显式跳过。要验证浏览器行为，在可启动本机浏览器的环境中设置：
 
 ```powershell
 $env:SSR_TEST_BROWSER = 'chrome'

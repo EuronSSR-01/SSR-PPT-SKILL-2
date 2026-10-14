@@ -79,7 +79,7 @@ python -m pip install fonttools brotli playwright pillow pymupdf python-pptx
 ```
 
 - 浏览器：Playwright 会自动使用本机已安装的 Chrome 或 Edge；都没有时运行 `python -m playwright install chromium`。
-- PPTX 渲染需要 LibreOffice。
+- PPTX 渲染需要 LibreOffice；没有时，可用 `preview.py pptx --pdf` 传入 WPS／PowerPoint 由最终 PPTX 导出的 PDF。
 - 新建 PPTX 默认用 python-pptx；已有 PptxGenJS 也可以用。
 
 ## 使用
@@ -143,6 +143,15 @@ python -m pip install fonttools brotli playwright pillow pymupdf python-pptx
 - 回归测试 19 项（含 4 项浏览器测试）全部通过；双格式样例重新生成后严格检查通过，版面 0 错误 0 警告，11 个编辑目标通过。
 - 尚未验证：新规则对 DSH 等 agent 的实际效果，需要用同一材料再跑一次对照。
 
+为线条压字和外部 PDF 补充（同一环境）：
+- **线条穿字提示**：`preview.py pptx` 的版面检查新增警告级的“线条穿过文字”。逐字判断，线要穿过字形中部才算；后画的填充形状挡住的线、贴合整段文字的删除线、文字下方的下划线都不算。只作提示，需看图判断，有意的设计可以保留。
+  - 在 DSH 第三次的成品上报出第 6 页压在虚线上的标签，这是此前只能靠看图发现的问题。
+  - 在另外 9 份 PPTX（共 55 页，含模板、原稿、DSH 第二次的成品和本仓库的示例）上没有误报。
+  - HTML 的版面检查仍抓不到文字压住图形。
+- **`--pdf`**：`preview.py pptx --pdf <PDF>` 用 WPS、PowerPoint 等由最终 PPTX 导出的 PDF 生成逐页图并做版面检查，适合没有 LibreOffice 的环境。报告记录 PDF 与 PPTX 的哈希；PDF 比 PPTX 旧时给出警告；页数不符时渲染检查失败。对象清单、字体和编辑测试仍读 PPTX。
+  - 已用 LibreOffice 导出的 PDF 验证；本机 WPS 的 COM 接口无法调用，WPS 导出的 PDF 尚未实测。
+- 回归测试增至 21 项（含 4 项浏览器测试），全部通过。
+
 [维护测试说明](tests/README.md) 记录命令、版本与证据范围；[跨 agent 对比测试](tests/cross-agent/README.md) 提供固定任务与评分表。
 
 尚未覆盖：Cursor、Grok Build、Antigravity、DeepSeek Harness 中的实际运行（本机没有安装）；PowerPoint／WPS 实机编辑；多模型效果对照；所有风格的验证。
@@ -156,7 +165,7 @@ python -m pip install fonttools brotli playwright pillow pymupdf python-pptx
 | `scripts/pptx_kit.py` | python-pptx 基础操作：画布坐标、中西文字体、无阴影形状、单系列高亮图表、无样式表格、裁切图片 |
 | `scripts/embed_fonts.py` | HTML 字体子集化、内联及缺字报告；嵌入前核许可 |
 | `scripts/preview.py html` | 离线浏览、图片解码、字体加载、键盘、逐页截图、打印与版面检查；每页正文字数，`--visual-first` 时提示长文字 |
-| `scripts/preview.py pptx` | LibreOffice 渲染、版面检查、对象与所有主题字体清单；指定对象编辑与重开；每页正文字数，`--visual-first` 时提示长文字（不需要渲染） |
+| `scripts/preview.py pptx` | LibreOffice 渲染（或 `--pdf` 传入由最终 PPTX 导出的 PDF）、版面检查（含线条穿字提示）、对象与所有主题字体清单；指定对象编辑与重开；每页正文字数，`--visual-first` 时提示长文字（不需要渲染） |
 | `scripts/preview.py sheet / compare` | 总览、灰度／模糊图与方向对照 |
 | `scripts/set_theme_fonts.py` | 指定主题的字体修复；多主题要求明确选择范围 |
 
