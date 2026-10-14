@@ -29,7 +29,7 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
-from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION
+from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION, XL_TICK_LABEL_POSITION
 from pptx.enum.dml import MSO_LINE
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
@@ -201,9 +201,14 @@ class Deck:
     def bar_chart(self, slide, x, y, w, h, categories, values, highlight=(), horizontal=True,
                   color="E8590C", base="CBC5B8", series_name="值", number_format="0",
                   font="Microsoft YaHei", size=16, label_color="666158", axis_color="1A1A1A",
-                  gap_width=60, max_value=None):
-        """Native bar (horizontal) or column chart with one real series; highlight = indices to colour."""
-        data = CategoryChartData()
+                  gap_width=60, max_value=None, min_value=None):
+        """Native bar (horizontal) or column chart with one real series; highlight = indices to colour.
+        The value range always includes zero and leaves room for the outside labels on each side that has
+        data; pass max_value / min_value to fix either end."""
+        numeric = [v for v in values if v is not None]
+        if not numeric:
+            raise ValueError("bar_chart needs at least one numeric value")
+        data = CategoryChartData()  # values are passed through unchanged; only the axis range is computed
         data.categories = list(categories)
         data.add_series(series_name, list(values))
         kind = XL_CHART_TYPE.BAR_CLUSTERED if horizontal else XL_CHART_TYPE.COLUMN_CLUSTERED
@@ -217,12 +222,18 @@ class Deck:
         plot.gap_width = gap_width
         plot.vary_by_categories = False
         series = plot.series[0]
+        series.invert_if_negative = False  # otherwise some renderers paint negative bars white (invisible)
         series.format.fill.solid()
         series.format.fill.fore_color.rgb = rgb(base)
         for i in highlight:
             point = series.points[i]
             point.format.fill.solid()
             point.format.fill.fore_color.rgb = rgb(color)
+        for dpt in series._element.findall(qn("c:dPt")):  # each point needs its own flag too, right after c:idx
+            if dpt.find(qn("c:invertIfNegative")) is None:
+                flag = OxmlElement("c:invertIfNegative")
+                flag.set("val", "0")
+                dpt.find(qn("c:idx")).addnext(flag)
         plot.has_data_labels = True
         labels = plot.data_labels
         labels.number_format = number_format
@@ -234,13 +245,18 @@ class Deck:
         value_axis.visible = False
         value_axis.has_major_gridlines = False
         value_axis.has_minor_gridlines = False
-        numeric = [v for v in values if v is not None]
-        value_axis.maximum_scale = max_value if max_value is not None else max(numeric) * 1.18
-        value_axis.minimum_scale = min(0, min(numeric))
+        low, high = min(0, min(numeric)), max(0, max(numeric))
+        pad = ((high - low) or 1) * 0.18  # room for labels beyond the bar ends
+        top = max_value if max_value is not None else (high + pad if high > 0 else 0 if low < 0 else 1)
+        bottom = min_value if min_value is not None else (low - pad if low < 0 else 0)
+        if not bottom < top:
+            raise ValueError(f"value range [{bottom}, {top}] is empty; check min_value / max_value")
+        value_axis.maximum_scale, value_axis.minimum_scale = top, bottom
         category_axis.has_major_gridlines = False
         category_axis.format.line.fill.background()
         category_axis.tick_labels.font.size = self.pt(size)
         category_axis.tick_labels.font.color.rgb = rgb(axis_color)
+        category_axis.tick_label_position = XL_TICK_LABEL_POSITION.LOW  # beside the plot, not on the zero line
         if horizontal:
             category_axis.reverse_order = True  # first category on top
         set_ea(chart._chartSpace, font)

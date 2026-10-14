@@ -484,8 +484,12 @@ def cmd_html(args):
 # ---------------------------------------------------------------- PPTX
 
 def find_soffice(explicit):
+    """Path to LibreOffice's soffice, or None if it is not available (rendering is then reported as not_run)."""
     if explicit:
-        return explicit
+        found = explicit if Path(explicit).is_file() else shutil.which(explicit)
+        if not found:
+            print(f"warning: LibreOffice not found at {explicit}", file=sys.stderr)
+        return found
     for name in ("soffice.com", "soffice", "libreoffice"):
         if shutil.which(name):
             return shutil.which(name)
@@ -498,7 +502,7 @@ def find_soffice(explicit):
     for c in candidates:
         if Path(c).exists():
             return c
-    sys.exit("LibreOffice (soffice) not found; install it or pass --soffice PATH")
+    return None
 
 
 PLACEHOLDER = re.compile(r"lorem ipsum|\bTODO\b|\bTBD\b|X{3,}|占位|待补充|待填写|此处填写|示例文字", re.I)
@@ -577,7 +581,7 @@ def pptx_to_pngs(pptx, out_dir, soffice, width, layout=None):
         subprocess.run(cmd, check=True, capture_output=True, timeout=300)
         pdf = Path(tmp, Path(pptx).stem + ".pdf")
         if not pdf.exists():
-            sys.exit(f"LibreOffice did not produce a PDF for {pptx}")
+            raise RuntimeError(f"LibreOffice did not produce a PDF for {pptx}")
         doc = pm.open(pdf)
         paths = []
         for i, page in enumerate(doc):
@@ -866,10 +870,15 @@ def edit_test(pptx, out_dir, soffice=None, width=1600, targets=None):
             record["status"], record["detail"] = "failed", f"checker error {type(error).__name__}: {error}"
     prs.save(copy)
     verify_edits(Presentation(copy), records)
-    rendered = pptx_to_pngs(copy, out_dir / "edit-test", soffice, width) if soffice else []
+    rendered, render_note = [], "not rendered: LibreOffice or PyMuPDF unavailable"
+    if soffice and pymupdf_or_none():
+        try:
+            rendered, render_note = pptx_to_pngs(copy, out_dir / "edit-test", soffice, width), None
+        except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+            render_note = f"rendering the edited copy failed: {error}"
     return {"copy": str(copy), "checks": records,
             "selection": "explicit" if targets is not None else "one text per page/group, all tables/charts/groups/pictures",
-            "rendered": [str(p) for p in rendered],
+            "rendered": [str(p) for p in rendered], "render_note": render_note,
             "scope": "Library save/reload; manual edits, auto-connect and data-linked labels need task-specific checks."}
 
 
@@ -879,11 +888,24 @@ def cmd_pptx(args):
     slides_dir = out / "slides"
     if slides_dir.exists():
         shutil.rmtree(slides_dir)
+    # Without LibreOffice or PyMuPDF, rendering and the layout check are reported as not_run;
+    # the inventory, font report and edit test still run.
     soffice = find_soffice(args.soffice)
-    layout = []
-    pngs = pptx_to_pngs(src, slides_dir, soffice, args.width, layout)
-    report = {"file": str(src), "renderer": "LibreOffice (approximation of PowerPoint)",
-              "slides": len(pngs), "fonts": font_inventory(src), "inventory": inventory(src), "layout": layout}
+    can_render = bool(soffice) and pymupdf_or_none() is not None
+    layout, pngs, render_note, render_failed = [], [], None, False
+    if not can_render:
+        render_note = ("LibreOffice not found" if not soffice else "PyMuPDF not installed") + \
+            "; rendering and the layout check were not run (inventory, fonts and edit test still run)."
+        print("warning: " + render_note, file=sys.stderr)
+    else:
+        try:
+            pngs = pptx_to_pngs(src, slides_dir, soffice, args.width, layout)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+            render_note, render_failed, layout = f"rendering failed: {error}", True, []
+            print("warning: " + render_note, file=sys.stderr)
+    report = {"file": str(src), "renderer": "LibreOffice (approximation of PowerPoint)" if pngs else None,
+              "render_note": render_note, "slides": len(pngs), "fonts": font_inventory(src),
+              "inventory": inventory(src), "layout": layout}
     layout_dir = out / "layout"
     if layout_dir.exists():
         shutil.rmtree(layout_dir)
@@ -898,10 +920,13 @@ def cmd_pptx(args):
             report["edit_test"] = "skipped: python-pptx not installed"
         else:
             targets = json.loads(Path(args.edit_targets).read_text(encoding="utf-8")) if args.edit_targets else None
-            report["edit_test"] = edit_test(src, out, soffice, args.width, targets)
-    make_sheet(pngs, out / "sheet.png")
-    print(f"slides: {len(pngs)} -> {slides_dir}")
-    print(f"sheet  -> {out / 'sheet.png'} (+ -gray, -blur)")
+            report["edit_test"] = edit_test(src, out, soffice if can_render else None, args.width, targets)
+    if pngs:
+        make_sheet(pngs, out / "sheet.png")
+        print(f"slides: {len(pngs)} -> {slides_dir}")
+        print(f"sheet  -> {out / 'sheet.png'} (+ -gray, -blur)")
+    else:
+        print(f"slides: not rendered ({render_note})")
     print(f"fonts: {report['fonts']}")
     if report["inventory"]:
         for c in report["inventory"]:
@@ -912,23 +937,35 @@ def cmd_pptx(args):
             print(f"edit test: {checks_status(edit['checks'])}, {len(edit['checks'])} targets; details in report.json")
         else:
             print(f"edit test: {edit}")
-    print(f"layout: {layout_errors} errors, {layout_warnings} warnings"
-          + (f" -> annotated pages in {layout_dir}" if layout_errors or layout_warnings else ""))
+    if pngs:
+        print(f"layout: {layout_errors} errors, {layout_warnings} warnings"
+              + (f" -> annotated pages in {layout_dir}" if layout_errors or layout_warnings else ""))
+    else:
+        print("layout: not run (needs a rendering)")
     for item in layout:
         for f in item["findings"]:
             print(f"  slide {item['slide']:02d} {f['severity']:<7} {f['kind']:<18} “{f['text']}” {f['detail']}")
 
     expected_pages = len(report["inventory"]) if report["inventory"] is not None else None
-    render_status = ("unsupported" if expected_pages is None else
-                     "passed" if len(pngs) == expected_pages else "failed")
-    report["checks"] = [check("render", render_status, "Compare rendered pages with source slides.",
+    if not can_render:
+        render_status = "not_run"
+    elif render_failed:
+        render_status = "failed"
+    else:
+        render_status = ("unsupported" if expected_pages is None else
+                         "passed" if len(pngs) == expected_pages else "failed")
+    report["checks"] = [check("render", render_status, render_note or "Compare rendered pages with source slides.",
                               expected=expected_pages, actual=len(pngs)),
-                        check("inventory", "passed" if report["inventory"] is not None else "unsupported"),
-                        check("layout", "failed" if layout_errors else "passed",
-                              f"{layout_errors} errors (outside slide, overlapping text), {layout_warnings} warnings "
-                              "(orphan line, small font, placeholder). Measured on the LibreOffice rendering; "
-                              "PowerPoint/WPS text metrics can differ. No contrast check for PPTX.",
-                              errors=layout_errors, warnings=layout_warnings)]
+                        check("inventory", "passed" if report["inventory"] is not None else "unsupported")]
+    if pngs:
+        report["checks"].append(check(
+            "layout", "failed" if layout_errors else "passed",
+            f"{layout_errors} errors (outside slide, overlapping text), {layout_warnings} warnings "
+            "(orphan line, small font, placeholder). Measured on the LibreOffice rendering; "
+            "PowerPoint/WPS text metrics can differ. No contrast check for PPTX.",
+            errors=layout_errors, warnings=layout_warnings))
+    else:
+        report["checks"].append(check("layout", "not_run", "Needs a rendering; " + (render_note or "")))
     edit = report.get("edit_test")
     if isinstance(edit, dict) and edit["checks"]:
         report["checks"].extend(edit["checks"])

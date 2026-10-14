@@ -153,9 +153,11 @@ def routes(r):
                       "PptxGenJS (Node)" if r["pptxgenjs"] else "missing: install python-pptx",
         "html_review": "preview.py html: screenshots, interaction, print and layout checks" if html_check else
                        "missing: playwright and a Chromium-family browser; HTML review limited to structure",
-        "pptx_render": "preview.py pptx: LibreOffice -> PDF -> PNG" if render else
-                       "missing: LibreOffice and/or PyMuPDF; render marked not_run",
-        "pptx_edit_test": "preview.py pptx --edit-test" if pkg["python-pptx"] else "missing: python-pptx",
+        "pptx_render": "preview.py pptx: LibreOffice -> PDF -> PNG, plus layout check" if render else
+                       "missing: LibreOffice and/or PyMuPDF; render and layout check reported as not_run",
+        "pptx_edit_test": ("missing: python-pptx" if not pkg["python-pptx"] else
+                           "preview.py pptx --edit-test" if render else
+                           "preview.py pptx --edit-test (structure, fonts and edit test only; no rendering)"),
         "html_fonts": (f"embed with embed_fonts.py: {', '.join(embeddable)}" if pkg["fonttools"] and embeddable else
                        "system fonts with fallbacks (no embeddable CJK font or fontTools)"),
         "visual_review": "If the model can view images: open the PNGs from preview.py. If not: rely on the "

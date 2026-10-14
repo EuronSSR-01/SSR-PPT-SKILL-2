@@ -4,3 +4,6 @@ __pycache__/
 
 # Local real-material tests (may contain confidential client files); never publish
 /测试/
+
+# Local notes from conversations with other agents; never publish
+/GPT-6-Astra交流/

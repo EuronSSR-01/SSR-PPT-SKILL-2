@@ -290,6 +290,53 @@ class KitTests(unittest.TestCase):
             self.assertEqual([c["status"] for c in result["checks"]], ["passed", "passed"])
 
 
+    def test_bar_chart_axis_covers_negative_zero_and_mixed_values(self):
+        sys.path.insert(0, str(SCRIPTS))
+        try:
+            from pptx_kit import Deck
+        finally:
+            sys.path.remove(str(SCRIPTS))
+        for values in ([-10, -5], [0, 0, 0], [-3, 5], [34, 24, 15], [7], [None, 4]):
+            with self.subTest(values=values):
+                deck = Deck()
+                axis = deck.bar_chart(deck.slide(), 80, 80, 600, 300, [str(i) for i in range(len(values))],
+                                      values).chart.value_axis
+                numeric = [v for v in values if v is not None]
+                low, high = axis.minimum_scale, axis.maximum_scale
+                self.assertLess(low, high)
+                self.assertLessEqual(low, min(min(numeric), 0))
+                self.assertGreaterEqual(high, max(max(numeric), 0))
+        # Negative bars must not be inverted (rendered white or mirrored), for the series and highlighted points.
+        deck = Deck()
+        frame = deck.bar_chart(deck.slide(), 80, 80, 600, 300, ["a", "b"], [-3, 5], highlight={0})
+        xml = ET.tostring(frame.chart._chartSpace).decode()
+        self.assertIn('<c:dPt><c:idx val="0"/><c:invertIfNegative val="0"/>', xml)
+        self.assertIn('<c:invertIfNegative val="0"/>', xml.split("<c:dPt>")[0])
+        self.assertIn('<c:tickLblPos val="low"/>', xml)
+        with self.assertRaises(ValueError):
+            Deck().bar_chart(Deck().slide(), 0, 0, 100, 100, ["a"], [None])
+
+
+class NoRendererTests(unittest.TestCase):
+    def test_pptx_check_runs_edit_test_without_libreoffice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            prs = Presentation()
+            prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_textbox(0, 0, Inches(4), Inches(1)).text = "标题"
+            prs.save(work / "deck.pptx")
+            base = [sys.executable, str(SCRIPTS / "preview.py"), "pptx", str(work / "deck.pptx"),
+                    "--edit-test", "--soffice", str(work / "no-such-soffice.exe")]
+            result = subprocess.run(base + ["--out", str(work / "review")], capture_output=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            report = json.loads((work / "review/report.json").read_text(encoding="utf-8"))
+            checks = {c["name"]: c["status"] for c in report["checks"]}
+            self.assertEqual(checks["render"], "not_run")
+            self.assertEqual(checks["layout"], "not_run")
+            self.assertTrue(any(n.startswith("edit:") and s == "passed" for n, s in checks.items()))
+            strict = subprocess.run(base + ["--out", str(work / "strict"), "--strict"], capture_output=True, timeout=120)
+            self.assertEqual(strict.returncode, 1)  # a required check was not run, so strict mode must not pass
+
+
 qn_ea = "{http://schemas.openxmlformats.org/drawingml/2006/main}ea"
 qn_effect = "{http://schemas.openxmlformats.org/drawingml/2006/main}effectLst"
 
