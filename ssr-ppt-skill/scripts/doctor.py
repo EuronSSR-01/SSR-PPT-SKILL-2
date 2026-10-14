@@ -162,6 +162,9 @@ def routes(r):
                        "system fonts with fallbacks (no embeddable CJK font or fontTools)"),
         "visual_review": "If the model can view images: open the PNGs from preview.py. If not: rely on the "
                          "layout report from preview.py html and state 'not visually reviewed' in the delivery notes.",
+        "text_hints": "visual-first decks: add --visual-first to preview.py html/pptx to list long paragraphs and "
+                      "boxes of points (hints only; the pptx check needs no rendering)" if pkg["python-pptx"] or html_check else
+                      "missing: python-pptx or an HTML check; review text density by reading the planning",
     }
     return out
 

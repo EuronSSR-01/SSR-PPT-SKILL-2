@@ -8,6 +8,9 @@
   preview.py sheet PNGS|DIR   --out FILE  contact sheet plus -gray and -blur variants
   preview.py compare A B ...  --out FILE  images side by side for comparing directions
 
+html and pptx also report body text per slide; with --visual-first they point at long paragraphs and
+boxes of points that might become a chart or diagram (hints, not a pass/fail check).
+
 Dependencies: Pillow; html needs playwright (bundled Chromium or installed Chrome/Edge);
 pptx needs LibreOffice and PyMuPDF, and python-pptx for the inventory and --edit-test.
 Every image this writes must still be opened and looked at; numbers in report.json are only hints.
@@ -268,6 +271,95 @@ LAYOUT_JS = r"""(index) => {
   return out;
 }"""
 
+# Body text per slide for the visual-first hints: leaf text blocks (SVG text lines included) and the card,
+# list or SVG group each sits in. Left out: h1/h2, headline-size text (>= 36px), tables, notes and the
+# footer band (bottom 12%).
+TEXT_JS = r"""(index) => {
+  const slide = document.querySelectorAll('#ssr-deck > .ssr-slide')[index];
+  const sr = slide.getBoundingClientRect();
+  const k = sr.width / (slide.offsetWidth || sr.width) || 1;
+  const rel = r => ({x: Math.round((r.left - sr.left) / k), y: Math.round((r.top - sr.top) / k),
+                     w: Math.round(r.width / k), h: Math.round(r.height / k)});
+  const skip = el => el.closest('[data-lint-ignore], .ssr-notes, .ssr-ui, script, style, table, h1, h2');
+  const shown = el => { for (let e = el; e && e !== slide; e = e.parentElement) { const cs = getComputedStyle(e);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05) return false; } return true; };
+  const fontPx = el => { const fs = parseFloat(getComputedStyle(el).fontSize) || 16;
+    if (el instanceof SVGElement && el.getScreenCTM) { const m = el.getScreenCTM(); if (m) return fs * Math.hypot(m.a, m.b) / k; }
+    return fs; };
+  const leafSel = 'p, li, dd, dt, blockquote, figcaption, h3, h4, h5, h6, div';
+  const isCard = e => { if (e instanceof SVGElement) return e.tagName === 'g';
+    if (/^(UL|OL)$/.test(e.tagName)) return true; const cs = getComputedStyle(e);
+    const bg = /rgba?\(([^)]+)\)/.exec(cs.backgroundColor); const alpha = bg ? (bg[1].split(/[ ,/]+/)[3] ?? 1) : 0;
+    return Number(alpha) > 0.05 || parseFloat(cs.borderTopWidth) > 0 || parseFloat(cs.borderLeftWidth) > 0 ||
+           (cs.boxShadow && cs.boxShadow !== 'none'); };
+  const candidates = Array.from(slide.querySelectorAll(leafSel)).filter(el => !el.closest('svg') && !el.querySelector(leafSel))
+    .concat(Array.from(slide.querySelectorAll('svg text')));
+  const leaves = [], groups = new Map();
+  for (const el of candidates) {
+    const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
+    if (!text || skip(el) || !shown(el) || fontPx(el) >= 36) continue;
+    const r = el.getBoundingClientRect();
+    if (r.top - sr.top >= sr.height * 0.88) continue;
+    let group = -1;
+    for (let a = el.parentElement; a && a !== slide; a = a.parentElement) {
+      const ar = a.getBoundingClientRect();
+      if (ar.width * ar.height > sr.width * sr.height * 0.4) break;
+      if (isCard(a)) { if (!groups.has(a)) groups.set(a, groups.size); group = groups.get(a); break; }
+    }
+    leaves.push({text, rect: rel(r), group});
+  }
+  return {leaves, groups: Array.from(groups.keys()).map(a => rel(a.getBoundingClientRect()))};
+}"""
+
+CJK_CHAR = re.compile(r"[㐀-鿿豈-﫿぀-ヿ가-힯]")
+LATIN_WORD = re.compile(r"[A-Za-z0-9]+(?:[.,'’%-][A-Za-z0-9]+)*")
+LONG_TEXT = 60  # 字 in one paragraph or one box of points; a Latin word or number counts as two
+
+
+def text_units(text):
+    """Reading length in 字: one per CJK character, two per Latin word or number."""
+    return len(CJK_CHAR.findall(text)) + 2 * len(LATIN_WORD.findall(text))
+
+
+def text_density(leaves, groups, visual_first):
+    """Summarise one slide's body text. leaves: [{text, rect, groups}] where groups lists the enclosing
+    blocks (innermost first); groups: [rect]. With visual_first, long paragraphs and text-heavy boxes become
+    hints. They point at text that might become a chart or diagram; they are not a pass/fail check."""
+    for leaf in leaves:
+        leaf["units"] = text_units(leaf["text"])
+    findings, flagged = [], set()
+    for i, leaf in enumerate(leaves):
+        if visual_first and leaf["units"] > LONG_TEXT:
+            flagged.add(i)
+            findings.append({"kind": "long_paragraph", "severity": "hint", "text": leaf["text"][:40],
+                             "rect": leaf["rect"], "units": leaf["units"],
+                             "detail": f"About {leaf['units']} 字 in one paragraph. Can a chart or diagram carry it? "
+                                       "Keep conditions; if text is the right form, say why in planning.md."})
+    members = {}
+    for i, leaf in enumerate(leaves):
+        for g in leaf.get("groups", []):
+            members.setdefault(g, []).append(i)
+    for g in sorted(members, key=lambda g: len(members[g])):  # inner boxes first
+        idx = members[g]
+        units = sum(leaves[i]["units"] for i in idx)
+        if visual_first and len(idx) >= 2 and units > LONG_TEXT and not flagged.intersection(idx):
+            flagged.update(idx)
+            findings.append({"kind": "long_text_block", "severity": "hint", "text": leaves[idx[0]]["text"][:40],
+                             "rect": groups[g], "units": units,
+                             "detail": f"About {units} 字 of points in one box. Boxed text is not yet a diagram: "
+                                       "can position, links or scale carry it? Keep conditions, or say why in planning.md."})
+    return {"units": sum(l["units"] for l in leaves),
+            "longest_paragraph": max((l["units"] for l in leaves), default=0), "findings": findings}
+
+
+def print_text(text):
+    print("text (字 per slide, body only): " + "  ".join(f"{s['slide']:02d}:{s['units']}" for s in text["slides"]))
+    if text["visual_first"]:
+        hints = [(s["slide"], f) for s in text["slides"] for f in s["findings"]]
+        print(f"visual-first hints: {len(hints)} (pointers to recheck, not a pass/fail check)")
+        for n, f in hints:
+            print(f"  slide {n:02d} hint    {f['kind']:<18} “{f['text']}” {f['detail']}")
+
 
 def draw_layout(shot, findings, out_path, scale):
     """Annotate a slide screenshot with numbered boxes: red = error, orange = warning."""
@@ -400,6 +492,7 @@ def cmd_html(args):
         page.set_viewport_size({"width": W, "height": H})
         page.add_style_tag(content=CAPTURE_CSS)
         report["layout"] = []
+        report["text"] = {"visual_first": args.visual_first, "slides": []}
         for i in range(n):
             if info["api"]:
                 page.evaluate("i => SSRPlayer.go(i, { reveal: 'all' })", i)
@@ -410,6 +503,10 @@ def cmd_html(args):
             page.wait_for_timeout(60)
             page.locator("#ssr-deck").screenshot(path=str(slides_dir / f"slide-{i + 1:02d}.png"))
             report["layout"].append({"slide": i + 1, "findings": page.evaluate(LAYOUT_JS, i)})
+            body = page.evaluate(TEXT_JS, i)
+            leaves = [{"text": l["text"], "rect": l["rect"], "groups": [l["group"]] if l["group"] >= 0 else []}
+                      for l in body["leaves"]]
+            report["text"]["slides"].append({"slide": i + 1, **text_density(leaves, body["groups"], args.visual_first)})
 
         if not args.no_pdf:
             pdf_path = out / "print.pdf"
@@ -452,6 +549,7 @@ def cmd_html(args):
     for item in report["layout"]:
         for f in item["findings"]:
             print(f"  slide {item['slide']:02d} {f['severity']:<7} {f['kind']:<18} “{f['text']}” {f['detail']}")
+    print_text(report["text"])
 
     report["checks"] = [
         check("offline_resources", "failed" if report["blocked_requests"] or report["failed_requests"] else "passed"),
@@ -535,7 +633,9 @@ def pdf_layout(page, pm):
         block_text = " ".join(t for t, _ in lines)
         bx0, by0, bx1, by1 = block["bbox"]
         off_page = bx0 < -1 or by0 < -1 or bx1 > width + 1 or by1 > height + 1  # reported below as an error
-        if len(lines) >= 2 and len(lines[-1][0]) == 1 and not off_page:
+        # A wrapped last line sits below every other line; table cells in one row share a line position.
+        wrapped = len(lines) >= 2 and (lines[-1][1][1] + lines[-1][1][3]) / 2 > max(b[3] for _, b in lines[:-1])
+        if wrapped and len(lines[-1][0]) == 1 and not off_page:
             add("orphan_last_line", "warning", block_text, lines[-1][1],
                 "Last line holds one character; rewrite, widen the box or break the line deliberately.")
         if PLACEHOLDER.search(block_text):
@@ -658,6 +758,81 @@ def inventory(pptx):
             c["warning"] = "full-slide picture with no native text/table/chart"
         slides.append(c)
     return slides
+
+
+def pptx_text(pptx, visual_first):
+    """Body text per slide, read from the file (no rendering needed). Paragraphs are the leaves; a text box
+    and a card shape underneath several text boxes are the enclosing blocks. Left out: titles, slide
+    number/date/footer placeholders, boxes whose text is all headline size (>= 27pt), tables, charts and
+    the footer band (bottom 12%). Rects are in points."""
+    try:
+        from pptx import Presentation
+        from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
+        from pptx.oxml.ns import qn
+    except ImportError:
+        return None
+    prs = Presentation(pptx)
+    W, H = prs.slide_width, prs.slide_height
+    skip_ph = {PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE, PP_PLACEHOLDER.VERTICAL_TITLE,
+               PP_PLACEHOLDER.SLIDE_NUMBER, PP_PLACEHOLDER.DATE, PP_PLACEHOLDER.FOOTER}
+
+    def placed(shapes, place):
+        """Yield (shape, (x, y, w, h)) in slide EMU, mapping group child coordinates."""
+        for s in shapes:
+            if s.left is None or s.top is None or s.width is None or s.height is None:
+                continue
+            box = place(s.left, s.top, s.width, s.height)
+            if s.shape_type == MSO_SHAPE_TYPE.GROUP:
+                xfrm = s._element.grpSpPr.find(qn("a:xfrm"))
+                off = xfrm.find(qn("a:chOff")) if xfrm is not None else None
+                ext = xfrm.find(qn("a:chExt")) if xfrm is not None else None
+                if off is None or ext is None or not int(ext.get("cx")) or not int(ext.get("cy")):
+                    inner = place
+                else:
+                    ox, oy, cx, cy = int(off.get("x")), int(off.get("y")), int(ext.get("cx")), int(ext.get("cy"))
+                    gx, gy, gw, gh = box
+                    inner = (lambda gx, gy, sx, sy, ox, oy: lambda x, y, w, h:
+                             (gx + (x - ox) * sx, gy + (y - oy) * sy, w * sx, h * sy))(gx, gy, gw / cx, gh / cy, ox, oy)
+                yield from placed(s.shapes, inner)
+            else:
+                yield s, box
+
+    pt = lambda b: {"x": round(b[0] / 12700), "y": round(b[1] / 12700), "w": round(b[2] / 12700), "h": round(b[3] / 12700)}
+    slides = []
+    for idx, slide in enumerate(prs.slides, 1):
+        leaves, groups, frames, cards = [], [], [], []
+        for s, box in placed(slide.shapes, lambda x, y, w, h: (x, y, w, h)):
+            is_ph = getattr(s, "is_placeholder", False)
+            if is_ph and s.placeholder_format.type in skip_ph:
+                continue
+            area = box[2] * box[3]
+            if s.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE and 0.02 * W * H <= area <= 0.4 * W * H:
+                cards.append(box)
+            if not s.has_text_frame or not s.text_frame.text.strip() or box[1] >= 0.88 * H:
+                continue
+            sizes = [(r.font.size or p.font.size) for p in s.text_frame.paragraphs for r in p.runs if r.text.strip()]
+            if sizes and all(z is not None and z.pt >= 27 for z in sizes):  # headline or big number
+                continue
+            frame = len(groups)
+            groups.append(pt(box))
+            frames.append((frame, box))
+            for p in s.text_frame.paragraphs:
+                for line in re.split(r"[\v\n]", p.text):
+                    if line.strip():
+                        leaves.append({"text": " ".join(line.split()), "rect": pt(box), "groups": [frame], "box": box})
+        for card in cards:  # a card shape with two or more text boxes sitting on it
+            inside = [f for f, b in frames if card[0] <= b[0] + b[2] / 2 <= card[0] + card[2]
+                      and card[1] <= b[1] + b[3] / 2 <= card[1] + card[3]]
+            if len(inside) >= 2:
+                g = len(groups)
+                groups.append(pt(card))
+                for leaf in leaves:
+                    if leaf["groups"][0] in inside:
+                        leaf["groups"].append(g)
+        for leaf in leaves:
+            del leaf["box"]
+        slides.append({"slide": idx, **text_density(leaves, groups, visual_first)})
+    return {"visual_first": visual_first, "slides": slides}
 
 
 def walk_shapes(shapes, parent=()):
@@ -885,6 +1060,7 @@ def edit_test(pptx, out_dir, soffice=None, width=1600, targets=None):
 def cmd_pptx(args):
     src = Path(args.input).resolve()
     out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
     slides_dir = out / "slides"
     if slides_dir.exists():
         shutil.rmtree(slides_dir)
@@ -905,7 +1081,7 @@ def cmd_pptx(args):
             print("warning: " + render_note, file=sys.stderr)
     report = {"file": str(src), "renderer": "LibreOffice (approximation of PowerPoint)" if pngs else None,
               "render_note": render_note, "slides": len(pngs), "fonts": font_inventory(src),
-              "inventory": inventory(src), "layout": layout}
+              "inventory": inventory(src), "layout": layout, "text": pptx_text(src, args.visual_first)}
     layout_dir = out / "layout"
     if layout_dir.exists():
         shutil.rmtree(layout_dir)
@@ -945,6 +1121,8 @@ def cmd_pptx(args):
     for item in layout:
         for f in item["findings"]:
             print(f"  slide {item['slide']:02d} {f['severity']:<7} {f['kind']:<18} “{f['text']}” {f['detail']}")
+    if report["text"]:
+        print_text(report["text"])
 
     expected_pages = len(report["inventory"]) if report["inventory"] is not None else None
     if not can_render:
@@ -977,6 +1155,10 @@ def cmd_pptx(args):
 
 # ---------------------------------------------------------------- CLI
 
+VISUAL_FIRST_HELP = (f"the deck is visual-first: hint at any paragraph or box of points over {LONG_TEXT} 字 "
+                     "(a Latin word or number counts as 2); hints only, never a failed check")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -988,6 +1170,7 @@ def main():
     h.add_argument("--browser", choices=["auto", "chromium", "chrome", "msedge"], default="auto")
     h.add_argument("--no-pdf", action="store_true", help="skip the print-to-PDF check")
     h.add_argument("--strict", action="store_true", help="nonzero exit unless required automatic checks pass")
+    h.add_argument("--visual-first", action="store_true", help=VISUAL_FIRST_HELP)
     h.set_defaults(func=cmd_html)
 
     x = sub.add_parser("pptx", help="render a PPTX through LibreOffice and inspect native objects")
@@ -998,6 +1181,7 @@ def main():
     x.add_argument("--edit-test", action="store_true", help="edit text/table/chart in a copy, reload and render")
     x.add_argument("--edit-targets", help="JSON list of slide (1-based), shape-id path, kind, optional table cell")
     x.add_argument("--strict", action="store_true", help="nonzero exit unless required automatic checks pass")
+    x.add_argument("--visual-first", action="store_true", help=VISUAL_FIRST_HELP)
     x.set_defaults(func=cmd_pptx)
 
     s = sub.add_parser("sheet", help="contact sheet from PNG files or a directory")

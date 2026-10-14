@@ -71,6 +71,35 @@ class HtmlTests(unittest.TestCase):
             self.assertEqual(checks["layout"], "failed")
             self.assertTrue((work / "review/layout/slide-01.png").exists())
 
+    def test_visual_first_hints_on_long_text_and_boxed_points(self):
+        css = (SKILL / "assets/player.css").read_text(encoding="utf-8")
+        js = (SKILL / "assets/player.js").read_text(encoding="utf-8")
+        long = "社区活动报名分散在多个街道，现场核对名单耗时较长，部分居民住得较远，建议活动中心统一安排志愿者就近登记，并按服务时长折算积分，同时规定回访时间。"
+        point = "<li>志愿者就近登记，按时长折算积分，并记录在案</li>"
+        heavy = (f'<h1 style="font-size:40px">{long}</h1><p style="font-size:20px">{long}</p>'
+                 f'<ul style="background:#eef;padding:12px;width:600px;font-size:18px">{point * 4}</ul>'
+                 f'<p style="position:absolute;top:660px;font-size:14px">来源：{long}</p>')
+        light = ('<svg width="800" height="200"><g><rect width="200" height="60"/><text x="10" y="40" font-size="20">发起站点</text></g>'
+                 '<text x="300" y="40" font-size="20">协助站点 · 7∶3</text></svg>')
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            deck = work / "text.html"
+            deck.write_text('<!doctype html><meta charset="utf-8"><style>' + css + '</style><div class="ssr-player">'
+                            '<main class="ssr-stage"><div id="ssr-deck" data-width="1280" data-height="720">'
+                            f'<section class="ssr-slide">{heavy}</section><section class="ssr-slide">{light}</section>'
+                            '</div></main></div><script>' + js + '</script>', encoding="utf-8")
+            base = [sys.executable, str(SKILL / "scripts/preview.py"), "html", str(deck), "--browser", BROWSER, "--no-pdf"]
+            result = subprocess.run(base + ["--out", str(work / "hints"), "--visual-first"], capture_output=True, timeout=90)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = json.loads((work / "hints/report.json").read_text(encoding="utf-8"))["text"]
+            self.assertEqual(sorted(f["kind"] for f in text["slides"][0]["findings"]), ["long_paragraph", "long_text_block"])
+            self.assertEqual(text["slides"][1]["findings"], [])
+            self.assertGreater(text["slides"][1]["units"], 0)       # SVG labels count as body text
+            plain = subprocess.run(base + ["--out", str(work / "plain")], capture_output=True, timeout=90)
+            self.assertEqual(plain.returncode, 0, plain.stderr)
+            text = json.loads((work / "plain/report.json").read_text(encoding="utf-8"))["text"]
+            self.assertEqual([s["findings"] for s in text["slides"]], [[], []])
+
     def test_reduced_motion_keeps_manual_steps_but_print_reveals(self):
         from playwright.sync_api import sync_playwright
         css = (SKILL / "assets/player.css").read_text(encoding="utf-8")

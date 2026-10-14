@@ -337,6 +337,65 @@ class NoRendererTests(unittest.TestCase):
             self.assertEqual(strict.returncode, 1)  # a required check was not run, so strict mode must not pass
 
 
+class TextDensityTests(unittest.TestCase):
+    LONG = "社区活动报名分散在多个街道，现场核对名单耗时较长，部分居民住得较远，建议活动中心统一安排志愿者就近登记，并按服务时长折算积分，同时规定回访时间。"
+    POINT = "志愿者就近登记，按时长折算积分"
+
+    def deck(self, path):
+        def box(shapes, x, y, w, text, size=16):
+            tb = shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(0.6))
+            run = tb.text_frame.paragraphs[0].add_run()
+            run.text, run.font.size = text, Pt(size)
+        prs = Presentation()
+        prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+        heavy = prs.slides.add_slide(prs.slide_layouts[5])                 # title-only layout
+        heavy.shapes.title.text = self.LONG                                # titles are not body text
+        box(heavy.shapes, 0.8, 1.6, 6, self.LONG)                          # one long paragraph
+        group = heavy.shapes.add_group_shape()                             # a card with three short points
+        group.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(7.5), Inches(1.6), Inches(5), Inches(3))
+        for i in range(3):
+            box(group.shapes, 7.7, 1.8 + i * 0.8, 4.6, f"{i + 1}. {self.POINT}{'，并记录在案' * i}")
+        box(heavy.shapes, 0.8, 4.4, 6, self.LONG[:30], size=40)            # headline-size text
+        box(heavy.shapes, 0.8, 6.8, 12, "来源：" + self.LONG, size=10)     # footer band
+        light = prs.slides.add_slide(prs.slide_layouts[6])
+        box(light.shapes, 0.8, 1.0, 4, "发起站点")
+        box(light.shapes, 6.0, 1.0, 4, "协助站点 · 7∶3")
+        prs.save(path)
+
+    def test_visual_first_hints_point_at_long_text_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "text.pptx"
+            self.deck(path)
+            text = preview.pptx_text(path, visual_first=True)
+            heavy, light = text["slides"]
+            kinds = sorted(f["kind"] for f in heavy["findings"])
+            self.assertEqual(kinds, ["long_paragraph", "long_text_block"])
+            self.assertEqual(preview.text_units(self.LONG), heavy["longest_paragraph"])  # title, headline, footer left out
+            card = next(f for f in heavy["findings"] if f["kind"] == "long_text_block")
+            self.assertEqual((card["rect"]["x"], card["rect"]["w"]), (540, 360))           # group coordinates mapped to points
+            self.assertEqual(light["findings"], [])
+            plain = preview.pptx_text(path, visual_first=False)
+            self.assertEqual([s["findings"] for s in plain["slides"]], [[], []])            # numbers only without the mode
+            self.assertEqual(plain["slides"][0]["units"], heavy["units"])
+
+    def test_units_count_cjk_characters_and_latin_words(self):
+        self.assertEqual(preview.text_units("营收 42.5 亿元，同比 +8.3%"), 6 + 2 * 2)
+        self.assertEqual(preview.text_units("Queue time fell 50%"), 2 * 4)
+
+    def test_cli_reports_hints_without_failing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            self.deck(work / "text.pptx")
+            cmd = [sys.executable, str(SCRIPTS / "preview.py"), "pptx", str(work / "text.pptx"), "--out",
+                   str(work / "review"), "--soffice", str(work / "no-such-soffice.exe"), "--visual-first"]
+            result = subprocess.run(cmd, capture_output=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            self.assertIn("visual-first hints: 2", result.stdout.decode("utf-8"))
+            report = json.loads((work / "review/report.json").read_text(encoding="utf-8"))
+            self.assertTrue(report["text"]["visual_first"])
+            self.assertNotIn("text", {c["name"] for c in report["checks"]})                 # never a pass/fail check
+
+
 qn_ea = "{http://schemas.openxmlformats.org/drawingml/2006/main}ea"
 qn_effect = "{http://schemas.openxmlformats.org/drawingml/2006/main}effectLst"
 
@@ -368,6 +427,12 @@ class PptxLayoutTests(unittest.TestCase):
         clean = prs.slides.add_slide(prs.slide_layouts[6])
         box(clean, 0.8, 0.6, 10, "干净的页面", 36)
         box(clean, 0.8, 2.0, 10, "正文不重叠，也不跑出页面。", 20)
+        table = prs.slides.add_slide(prs.slide_layouts[6])  # one-character number cells are not orphan lines
+        rows = [("门店", "服务", "时段", "已约"), ("甲门店", "冷链配送、仓储", "2", "2"), ("乙门店", "冷链配送", "0.5", "0")]
+        grid = table.shapes.add_table(len(rows), 4, Inches(0.8), Inches(1), Inches(11), Inches(2)).table
+        for r, row in enumerate(rows):
+            for c, value in enumerate(row):
+                grid.cell(r, c).text = value
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "layout.pptx"
             prs.save(src)
@@ -377,6 +442,7 @@ class PptxLayoutTests(unittest.TestCase):
             for kind in ("text_overlap", "text_outside_slide", "orphan_last_line", "font_too_small", "placeholder"):
                 self.assertIn(kind, kinds)
             self.assertEqual(layout[1]["findings"], [])
+            self.assertEqual(layout[2]["findings"], [])
 
 
 if __name__ == "__main__":
