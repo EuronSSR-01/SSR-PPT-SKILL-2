@@ -7,3 +7,6 @@ __pycache__/
 
 # Local notes from conversations with other agents; never publish
 /GPT-6-Astra交流/
+
+# Early demo decks built with an older version of the skill; kept locally as check samples
+/examples/
