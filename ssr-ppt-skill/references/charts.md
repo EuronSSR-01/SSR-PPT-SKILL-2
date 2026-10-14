@@ -79,8 +79,11 @@
 - 数据标签：`showValue: true`、`dataLabelPosition`、`dataLabelFormatCode: '#,##0'`、`dataLabelFontFace` / `dataLabelFontSize` / `dataLabelColor`。
 - 柱形：`barGapWidthPct: 50–80`；横向条形用 `barDir: 'bar'`，配合 `catAxisOrientation: 'maxMin'` 让排序从上到下。
 - 折线：`lineSize`、`lineDataSymbol`、`lineDataSymbolSize`。
-- **单点高亮**：优先用已安装版本支持的逐点着色；不要为配色增加假系列、把缺失值改零或扭曲底层数据。工具不支持时调整视觉或使用能保留真实数据的实现。
-- 数据标签选择在背景与数据色上清楚的颜色；具体支持范围以当前工具为准。
+- **单点高亮**：用逐点着色，不要为配色增加假系列、把缺失值改零或扭曲底层数据。
+  - PptxGenJS 条形／柱形图（4.0.1 实测）：保持单个系列，让 `chartColors` 给每个数据点一个颜色，例如 `chartColors: values.map((_, i) => i < 2 ? 'E8590C' : 'CBC5B8')`。底层数据仍是一个真实系列。
+  - 这种做法下标签可以放在柱外（`dataLabelPosition: 'outEnd'`），并可配合 `valAxisMaxVal` 给标签留出空间。
+  - 逐点着色会让图例按数据点列出，通常设 `showLegend: false`，改为直接标注。
+- 数据标签颜色对全部数据点统一，选在背景上清楚的颜色（通常是次文字色）并放在柱外；放在柱内时要同时检查强调色和浅色柱上的对比度。
 
 **python-pptx**：
 

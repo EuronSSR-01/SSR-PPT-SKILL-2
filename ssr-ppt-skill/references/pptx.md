@@ -15,7 +15,13 @@ Codex 桌面先用 `mcp__codex_app__load_workspace_dependencies` 找当前 runti
 
 其他环境复用现有工具：新建可用 PptxGenJS，模板与局部编辑可用 python-pptx／OOXML；本技能的双格式样例用 python-pptx。现有 `pptx` Skill 的技术方法可参考，视觉与范围按本任务约定。
 
-渲染可用目标 Office、WPS 或 LibreOffice＋PyMuPDF。字体度量和排版可能不同，报告实际渲染器，不把 LibreOffice 等同于 PowerPoint／WPS 实机验收。
+PptxGenJS 的已知要点（4.0.1 实测）：
+- 默认 `LAYOUT_16x9` 只有 10×5.625 英寸；要 13⅓×7.5 英寸须设 `pptx.layout = 'LAYOUT_WIDE'`。
+- `scripts/preview.py` 的图表自动编辑测试只接受 python-pptx 的内嵌工作表布局，PptxGenJS 生成的图表会如实标为 `unsupported`。图表的数据编辑是必需项时，二选一：用 python-pptx 生成该图表；或在 WPS／PowerPoint 中实际修改数据、保存重开并记录结果。不能把 `unsupported` 当作通过。
+
+渲染可用目标 Office、WPS 或 LibreOffice＋PyMuPDF。字体度量和排版可能不同，报告实际渲染器，不把 LibreOffice 等同于 PowerPoint／WPS 实机验收。LibreOffice 渲染有两个已知差异，看图时不要误判：
+- 会自动在汉字与西文、数字之间加间距，叠加手动空格后显得偏宽；PowerPoint 不会这样显示。
+- 西文字体本身含汉字时会直接用它显示中文，所以东亚字体缺失的问题在 LibreOffice 中看不出来，要以报告里的字体清单为准。
 
 ## 对象合同
 

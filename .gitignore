@@ -1,3 +1,6 @@
 .build/
 __pycache__/
 *.pyc
+
+# Local real-material tests (may contain confidential client files); never publish
+/测试/

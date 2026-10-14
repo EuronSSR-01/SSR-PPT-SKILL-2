@@ -486,7 +486,7 @@ def workbook_blob_cells(blob):
             value = cell.find("s:v", ns)
             if cell.get("t") == "inlineStr":
                 result[cell.get("r")] = "".join(cell.find("s:is", ns).itertext())
-            elif value is not None:
+            elif value is not None and value.text is not None:  # PptxGenJS writes empty <v/> cells
                 result[cell.get("r")] = shared[int(value.text)] if cell.get("t") == "s" else float(value.text)
         return result
 
@@ -559,6 +559,8 @@ def verify_edits(prs, records):
             record["status"] = "passed" if equivalent(record["actual"], record["expected"]) else "failed"
         except (KeyError, IndexError, NotImplementedError) as error:
             record["status"], record["detail"] = "failed", str(error)
+        except Exception as error:  # report the object instead of aborting the whole check
+            record["status"], record["detail"] = "failed", f"checker error {type(error).__name__}: {error}"
     return records
 
 
@@ -621,6 +623,8 @@ def edit_test(pptx, out_dir, soffice=None, width=1600, targets=None):
             record["status"], record["detail"] = "unsupported", str(error)
         except (KeyError, IndexError) as error:
             record["status"], record["detail"] = "failed", str(error)
+        except Exception as error:  # one malformed object must not abort the whole report
+            record["status"], record["detail"] = "failed", f"checker error {type(error).__name__}: {error}"
     prs.save(copy)
     verify_edits(Presentation(copy), records)
     rendered = pptx_to_pngs(copy, out_dir / "edit-test", soffice, width) if soffice else []

@@ -163,6 +163,25 @@ class EditTests(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             preview.workbook_blob_cells(blob.getvalue())
 
+    def test_empty_workbook_value_cell_does_not_crash(self):
+        # PptxGenJS writes empty <v/> cells in embedded workbooks; they must read as empty, not crash.
+        prs = Presentation()
+        shape = add_chart(prs.slides.add_slide(prs.slide_layouts[6]))
+        with zipfile.ZipFile(BytesIO(shape.chart.part.chart_workbook.xlsx_part.blob)) as source:
+            parts = {n: source.read(n) for n in source.namelist()}
+        ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        sheet = ET.fromstring(parts["xl/worksheets/sheet1.xml"])
+        row = sheet.find(f".//{{{ns}}}row")
+        ET.SubElement(ET.SubElement(row, f"{{{ns}}}c", r="Z1"), f"{{{ns}}}v")
+        parts["xl/worksheets/sheet1.xml"] = ET.tostring(sheet)
+        blob = BytesIO()
+        with zipfile.ZipFile(blob, "w") as output:
+            for name, data in parts.items():
+                output.writestr(name, data)
+        cells = preview.workbook_blob_cells(blob.getvalue())
+        self.assertNotIn("Z1", cells)
+        self.assertEqual(cells["B2"], 6)
+
     def test_unsupported_chart_is_not_passed(self):
         prs = Presentation()
         slide = prs.slides.add_slide(prs.slide_layouts[6])
