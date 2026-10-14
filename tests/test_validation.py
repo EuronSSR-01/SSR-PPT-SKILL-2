@@ -15,7 +15,7 @@ from pptx import Presentation
 from pptx.chart.data import CategoryChartData, XyChartData
 from pptx.enum.chart import XL_CHART_TYPE
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
-from pptx.util import Inches
+from pptx.util import Inches, Pt
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "ssr-ppt-skill" / "scripts"
@@ -249,6 +249,87 @@ class EditTests(unittest.TestCase):
             for name in a.namelist():
                 if name.startswith(("ppt/theme/", "ppt/slideMasters/", "ppt/slideLayouts/", "ppt/notesSlides/")) or name == "ppt/slides/slide2.xml":
                     self.assertEqual(a.read(name), b.read(name), name)
+
+
+class KitTests(unittest.TestCase):
+    def test_pptx_kit_defaults_and_editability(self):
+        sys.path.insert(0, str(SCRIPTS))
+        try:
+            from pptx_kit import Deck
+        finally:
+            sys.path.remove(str(SCRIPTS))
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            Image.new("RGB", (1600, 600), "#256360").save(work / "wide.png")
+            deck = Deck()
+            s = deck.slide(bg="FBF9F4")
+            deck.text(s, 80, 80, 800, 60, [[("改变", {"color": "E8590C"}), ("城市零售", {})]], size=44, font="Test Serif")
+            chart = deck.bar_chart(s, 80, 200, 700, 300, ["甲", "乙", "丙"], [5, 3, 2], highlight={0}, font="Test Sans")
+            table = deck.table(s, 80, 520, 600, [["城市", "数值"], ["上海", "86.4"]], align=["left", "right"])
+            pic = deck.picture(s, work / "wide.png", 800, 200, 300, 300)
+            box = deck.rect(s, 800, 520, 100, 50, fill="E8590C")
+            src = deck.save(work / "kit.pptx", theme_fonts=("Test Serif", "Test Sans"))
+
+            prs = Presentation(src)
+            slide = prs.slides[0]
+            self.assertEqual((prs.slide_width, prs.slide_height), (12192000, 6858000))
+            runs = [r for sh in slide.shapes if sh.has_text_frame for p in sh.text_frame.paragraphs for r in p.runs]
+            self.assertTrue(runs and all(r._r.find(".//" + qn_ea) is not None for r in runs))
+            plot = [sh for sh in slide.shapes if sh.has_chart][0].chart.plots[0]
+            self.assertEqual(len(plot.series), 1)
+            self.assertEqual(list(plot.series[0].values), [5, 3, 2])  # data untouched by the highlight
+            self.assertIn("2D5ABB26", ET.tostring([sh for sh in slide.shapes if sh.has_table][0]._element).decode())
+            # 1600x600 into a square keeps the centre 600/1600 of the width: each side loses (1 - 0.375) / 2
+            self.assertAlmostEqual(next(sh for sh in slide.shapes if sh.shape_id == pic.shape_id).crop_left, 0.3125, places=4)
+            self.assertIsNotNone(next(sh for sh in slide.shapes if sh.shape_id == box.shape_id)._element.find(".//" + qn_effect))
+            with zipfile.ZipFile(src) as z:
+                self.assertIn(b'<a:ea typeface="Test Sans"/>', z.read("ppt/theme/theme1.xml"))
+            result = preview.edit_test(src, work / "edit", targets=[
+                {"slide": 1, "path": [chart.shape_id], "kind": "chart"},
+                {"slide": 1, "path": [table.shape_id], "kind": "table", "cell": [1, 1]}])
+            self.assertEqual([c["status"] for c in result["checks"]], ["passed", "passed"])
+
+
+qn_ea = "{http://schemas.openxmlformats.org/drawingml/2006/main}ea"
+qn_effect = "{http://schemas.openxmlformats.org/drawingml/2006/main}effectLst"
+
+
+def soffice_or_none():
+    try:
+        return preview.find_soffice(None)
+    except SystemExit:
+        return None
+
+
+@unittest.skipUnless(soffice_or_none() and preview.pymupdf_or_none(), "LibreOffice and PyMuPDF are needed to render")
+class PptxLayoutTests(unittest.TestCase):
+    def test_layout_lint_on_rendered_pptx(self):
+        def box(slide, x, y, w, text, size, wrap=True):
+            tb = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(1))
+            tb.text_frame.word_wrap = wrap
+            run = tb.text_frame.paragraphs[0].add_run()
+            run.text, run.font.size = text, Pt(size)
+        prs = Presentation()
+        prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+        bad = prs.slides.add_slide(prs.slide_layouts[6])
+        box(bad, 0.8, 0.6, 8, "重叠的第一段标题文字", 32)
+        box(bad, 1.1, 0.75, 8, "重叠的第二段标题文字", 32)
+        box(bad, 11.5, 2.5, 4, "这一行文字跑出了页面右边", 24, wrap=False)
+        box(bad, 0.8, 4.0, 2.2, "一二三四五六七八九十十", 28)
+        box(bad, 6.0, 4.0, 4, "字号太小的说明文字", 7)
+        box(bad, 6.0, 5.0, 4, "TODO 补充数据", 18)
+        clean = prs.slides.add_slide(prs.slide_layouts[6])
+        box(clean, 0.8, 0.6, 10, "干净的页面", 36)
+        box(clean, 0.8, 2.0, 10, "正文不重叠，也不跑出页面。", 20)
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "layout.pptx"
+            prs.save(src)
+            layout = []
+            preview.pptx_to_pngs(src, Path(tmp) / "out", soffice_or_none(), 800, layout)
+            kinds = {f["kind"] for f in layout[0]["findings"]}
+            for kind in ("text_overlap", "text_outside_slide", "orphan_last_line", "font_too_small", "placeholder"):
+                self.assertIn(kind, kinds)
+            self.assertEqual(layout[1]["findings"], [])
 
 
 if __name__ == "__main__":

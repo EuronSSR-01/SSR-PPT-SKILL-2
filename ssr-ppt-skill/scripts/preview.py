@@ -18,6 +18,7 @@ from io import BytesIO
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -135,6 +136,157 @@ WAIT_ASSETS_JS = """async () => {
 }"""
 
 
+# Geometry checks on the fully revealed slide. They catch common defects without looking at the image
+# and tell agents with vision where to look. Opt-outs: data-bleed (intentional bleed off the slide),
+# data-lint-ignore (skip a subtree). Coordinates are canvas px relative to the slide.
+LAYOUT_JS = r"""(index) => {
+  const slide = document.querySelectorAll('#ssr-deck > .ssr-slide')[index];
+  const sr = slide.getBoundingClientRect();
+  const k = sr.width / (slide.offsetWidth || sr.width) || 1;
+  const rel = r => ({x: Math.round((r.left - sr.left) / k), y: Math.round((r.top - sr.top) / k),
+                     w: Math.round(r.width / k), h: Math.round(r.height / k)});
+  const out = [];
+  const label = el => (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+  const add = (kind, severity, el, rect, detail) => out.push({kind, severity, text: label(el), rect: rel(rect), detail});
+  const skip = el => el.closest('[data-lint-ignore], .ssr-notes, .ssr-ui, script, style');
+  const shown = el => { for (let e = el; e && e !== slide; e = e.parentElement) { const cs = getComputedStyle(e);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05) return false; } return true; };
+  const ownRects = el => { const rects = [];
+    for (const n of el.childNodes) if (n.nodeType === 3 && n.textContent.trim()) {
+      const range = document.createRange(); range.selectNodeContents(n);
+      for (const r of range.getClientRects()) if (r.width > 0.5 && r.height > 0.5) rects.push(r); }
+    return rects; };
+  const fontPx = el => { const fs = parseFloat(getComputedStyle(el).fontSize) || 16;
+    if (el instanceof SVGElement && el.getScreenCTM) { const m = el.getScreenCTM(); if (m) return fs * Math.hypot(m.a, m.b) / k; }
+    return fs; };
+  const texts = Array.from(slide.querySelectorAll('*')).filter(el => !skip(el) && shown(el) && ownRects(el).length)
+    .map(el => ({el, rects: ownRects(el), fs: fontPx(el)}));
+
+  for (const t of texts) {
+    // 1. text outside the slide (the slide clips it)
+    if (!t.el.closest('[data-bleed]')) for (const r of t.rects)
+      if (r.left < sr.left - 1 || r.top < sr.top - 1 || r.right > sr.right + 1 || r.bottom > sr.bottom + 1) {
+        add('text_outside_slide', 'error', t.el, r, 'Text runs past the slide edge; add data-bleed if intended.'); break; }
+    // 2. text clipped by an overflow-hidden ancestor
+    for (let a = t.el; a && a !== slide; a = a.parentElement) {  // the element itself may clip its own text
+      const cs = getComputedStyle(a);
+      if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
+      const ar = a.getBoundingClientRect();
+      const hit = t.rects.find(r => r.right > ar.right + 1 || r.bottom > ar.bottom + 1 || r.left < ar.left - 1 || r.top < ar.top - 1);
+      if (hit) { add('text_clipped', 'error', t.el, hit, 'Text exceeds an overflow-hidden container.'); break; }
+    }
+    // 5. font size
+    if (t.fs < 12) add('font_too_small', 'warning', t.el, t.rects[0], `Effective size ${t.fs.toFixed(1)}px (< 12px).`);
+  }
+
+  // 3. text overlapping other text (em-box height, so tight line-height does not count)
+  const box = (r, fs) => { const inset = Math.max(0, (r.height - fs * k) / 2);
+    return {l: r.left, r: r.right, t: r.top + inset, b: r.bottom - inset}; };
+  const symbolsOnly = el => /^[\p{P}\p{S}\s]+$/u.test(el.textContent || '');  // big quote marks: tiny ink, huge em box
+  for (let i = 0; i < texts.length; i++) for (let j = i + 1; j < texts.length; j++) {
+    const a = texts[i], b = texts[j];
+    if (a.el.contains(b.el) || b.el.contains(a.el) || symbolsOnly(a.el) || symbolsOnly(b.el)) continue;
+    let found = null;
+    for (const ra of a.rects) { const A = box(ra, a.fs);
+      for (const rb of b.rects) { const B = box(rb, b.fs);
+        const ix = Math.min(A.r, B.r) - Math.max(A.l, B.l), iy = Math.min(A.b, B.b) - Math.max(A.t, B.t);
+        if (ix > 4 && iy > 4) { found = ra; break; } }
+      if (found) break; }
+    if (found) add('text_overlap', 'error', a.el, found, `Overlaps “${label(b.el)}”.`);
+  }
+
+  // 4. orphan last line: a multi-line block whose last line holds about one character
+  const blocks = new Set(texts.map(t => t.el instanceof SVGElement ? null :
+    t.el.closest('p, li, h1, h2, h3, h4, h5, h6, td, th, dd, blockquote, figcaption, div')).filter(Boolean));
+  for (const el of blocks) {
+    if (skip(el) || el.querySelector('p, li, h1, h2, h3, h4, h5, h6, td, div, table, svg')) continue;
+    const range = document.createRange(); range.selectNodeContents(el);
+    const rs = Array.from(range.getClientRects()).filter(r => r.width > 0.5 && r.height > 0.5);
+    if (rs.length < 2) continue;
+    const fs = fontPx(el) * k, lines = [];
+    for (const r of rs) { const c = (r.top + r.bottom) / 2;
+      const line = lines.find(l => Math.abs(l.c - c) < fs * 0.5);
+      if (line) { line.l = Math.min(line.l, r.left); line.r = Math.max(line.r, r.right); }
+      else lines.push({c, l: r.left, r: r.right, t: r.top, b: r.bottom}); }
+    if (lines.length < 2) continue;
+    lines.sort((a, b) => a.c - b.c);
+    const last = lines[lines.length - 1];
+    if (last.r - last.l <= fs * 1.6)
+      add('orphan_last_line', 'warning', el, new DOMRect(last.l, last.t, last.r - last.l, last.b - last.t),
+          'Last line holds about one character; rewrite, widen or break the line deliberately.');
+  }
+
+  // 6. contrast against whatever is painted behind the text
+  const parse = c => { const m = /rgba?\(([^)]+)\)/.exec(c || ''); if (!m) return null;
+    const p = m[1].split(/[ ,/]+/).filter(Boolean).map(Number); return {r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1}; };
+  const lum = c => { const f = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b); };
+  const behind = (el, r) => {
+    if (!(el instanceof SVGElement)) {  // text paints over its own background first (badges, tags)
+      const own = getComputedStyle(el);
+      if (own.backgroundImage && own.backgroundImage !== 'none') return null;
+      const bg = parse(own.backgroundColor); if (bg && bg.a > 0.9) return bg; }
+    const stack = document.elementsFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+    for (const e of stack) {
+      if (e === el || el.contains(e) || !slide.contains(e) && e !== slide) continue;
+      if (/^(IMG|VIDEO|CANVAS|IMAGE)$/i.test(e.tagName)) return null;
+      const cs = getComputedStyle(e);
+      if (e instanceof SVGElement) {
+        if (e instanceof SVGGeometryElement) { const f = parse(cs.fill);
+          if (f && f.a > 0.9 && parseFloat(cs.fillOpacity || 1) > 0.9) return f;
+          if (cs.fill && cs.fill !== 'none' && !f) return null; }
+        continue; }
+      if (cs.backgroundImage && cs.backgroundImage !== 'none') return null;
+      const bg = parse(cs.backgroundColor); if (bg && bg.a > 0.9) return bg;
+      if (e === slide) break;
+    }
+    return null; };
+  const lowContrast = new Map();  // one finding per colour pair per slide
+  for (const t of texts) {
+    const cs = getComputedStyle(t.el);
+    const fg = parse(t.el instanceof SVGElement ? cs.fill : cs.color);
+    const bg = behind(t.el, t.rects[0]);
+    if (!fg || !bg) continue;
+    const mix = {r: fg.r * fg.a + bg.r * (1 - fg.a), g: fg.g * fg.a + bg.g * (1 - fg.a), b: fg.b * fg.a + bg.b * (1 - fg.a)};
+    const [hi, lo] = [lum(mix), lum(bg)].sort((a, b) => b - a);
+    const ratio = (hi + 0.05) / (lo + 0.05);
+    const large = t.fs >= 24 || (t.fs >= 18.66 && parseInt(cs.fontWeight, 10) >= 700);
+    if (ratio >= (large ? 3 : 4.5)) continue;
+    const key = `${Math.round(mix.r)},${Math.round(mix.g)},${Math.round(mix.b)}/${bg.r},${bg.g},${bg.b}/${large}`;
+    const seen = lowContrast.get(key);
+    if (seen) { seen.count++; continue; }
+    lowContrast.set(key, {t, ratio, need: large ? 3 : 4.5, count: 1});
+  }
+  for (const {t, ratio, need, count} of lowContrast.values())
+    add('low_contrast', 'warning', t.el, t.rects[0],
+        `Contrast ${ratio.toFixed(2)}:1 (needs ${need}:1)` + (count > 1 ? `; ${count} text items use this colour pair.` : '.'));
+
+  // 7. leftover placeholders
+  const placeholder = /lorem ipsum|\bTODO\b|\bTBD\b|X{3,}|占位|待补充|待填写|此处填写|示例文字/i;
+  for (const t of texts) if (placeholder.test(t.el.textContent))
+    add('placeholder', 'warning', t.el, t.rects[0], 'Looks like placeholder text.');
+  return out;
+}"""
+
+
+def draw_layout(shot, findings, out_path, scale):
+    """Annotate a slide screenshot with numbered boxes: red = error, orange = warning."""
+    Image = need("PIL.Image", "python -m pip install pillow")
+    from PIL import ImageDraw
+    im = Image.open(shot).convert("RGB")
+    draw = ImageDraw.Draw(im)
+    font = _font(max(14, int(16 * scale)))
+    numbered = sorted(enumerate(findings, 1), key=lambda p: p[1]["severity"] == "error")  # errors drawn on top
+    for n, f in numbered:
+        r = f["rect"]
+        color = (220, 30, 30) if f["severity"] == "error" else (240, 140, 0)
+        box = [r["x"] * scale, r["y"] * scale, (r["x"] + r["w"]) * scale, (r["y"] + r["h"]) * scale]
+        draw.rectangle(box, outline=color, width=max(2, int(3 * scale)))
+        draw.text((box[0] + 2, max(0, box[1] - 20 * scale)), str(n), fill=color, font=font)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    im.save(out_path)
+
+
 def check(name, status, detail="", required=True, **evidence):
     return {"name": name, "status": status, "required": required, "detail": detail, **evidence}
 
@@ -247,6 +399,7 @@ def cmd_html(args):
         # Per-slide captures, fully revealed, without UI or animation.
         page.set_viewport_size({"width": W, "height": H})
         page.add_style_tag(content=CAPTURE_CSS)
+        report["layout"] = []
         for i in range(n):
             if info["api"]:
                 page.evaluate("i => SSRPlayer.go(i, { reveal: 'all' })", i)
@@ -256,6 +409,7 @@ def cmd_html(args):
                     page.keyboard.press("ArrowRight")
             page.wait_for_timeout(60)
             page.locator("#ssr-deck").screenshot(path=str(slides_dir / f"slide-{i + 1:02d}.png"))
+            report["layout"].append({"slide": i + 1, "findings": page.evaluate(LAYOUT_JS, i)})
 
         if not args.no_pdf:
             pdf_path = out / "print.pdf"
@@ -274,6 +428,15 @@ def cmd_html(args):
 
     shots = sorted(slides_dir.glob("slide-*.png"))
     make_sheet(shots, out / "sheet.png")
+    layout_dir = out / "layout"
+    if layout_dir.exists():
+        shutil.rmtree(layout_dir)
+    for item in report["layout"]:
+        if item["findings"]:
+            draw_layout(slides_dir / f"slide-{item['slide']:02d}.png", item["findings"],
+                        layout_dir / f"slide-{item['slide']:02d}.png", args.scale)
+    errors = sum(f["severity"] == "error" for item in report["layout"] for f in item["findings"])
+    warnings = sum(f["severity"] == "warning" for item in report["layout"] for f in item["findings"])
     problems = report["console"] + report["page_errors"] + report["failed_requests"]
     print(f"browser: {report['browser']}  slides: {n}  canvas: {W}x{H}  fonts: {report['fonts_status']}")
     print(f"slides -> {slides_dir}")
@@ -285,6 +448,10 @@ def cmd_html(args):
     print(f"blocked external requests: {len(report['blocked_requests'])}  console/page errors: {len(problems)}")
     for line in (report["blocked_requests"] + problems)[:20]:
         print("  " + line)
+    print(f"layout: {errors} errors, {warnings} warnings" + (f" -> annotated pages in {layout_dir}" if errors or warnings else ""))
+    for item in report["layout"]:
+        for f in item["findings"]:
+            print(f"  slide {item['slide']:02d} {f['severity']:<7} {f['kind']:<18} “{f['text']}” {f['detail']}")
 
     report["checks"] = [
         check("offline_resources", "failed" if report["blocked_requests"] or report["failed_requests"] else "passed"),
@@ -297,6 +464,10 @@ def cmd_html(args):
         check("keyboard", "passed" if report.get("keyboard") and all(report["keyboard"].values())
               else "failed" if report.get("keyboard") else "unsupported",
               "SSRPlayer keyboard checks; use task-specific checks for a different player."),
+        check("layout", "failed" if errors else "passed",
+              f"{errors} errors (outside slide, clipped, overlapping text), {warnings} warnings (orphan line, "
+              "small font, contrast, placeholder). Geometry only: composition, meaning and crops still need review.",
+              errors=errors, warnings=warnings),
     ]
     pr = report.get("print", {})
     if args.no_pdf:
@@ -330,7 +501,73 @@ def find_soffice(explicit):
     sys.exit("LibreOffice (soffice) not found; install it or pass --soffice PATH")
 
 
-def pptx_to_pngs(pptx, out_dir, soffice, width):
+PLACEHOLDER = re.compile(r"lorem ipsum|\bTODO\b|\bTBD\b|X{3,}|占位|待补充|待填写|此处填写|示例文字", re.I)
+
+
+def pdf_layout(page, pm):
+    """Text geometry on a rendered PPTX page, in points: text off the page, text over other text,
+    a last line of about one character, tiny text and placeholders. Backgrounds are not known, so no contrast."""
+    flags = getattr(pm, "TEXTFLAGS_DICT", 0) & ~getattr(pm, "TEXT_MEDIABOX_CLIP", 64)  # keep text past the edge
+    width, height = page.rect.width, page.rect.height
+    findings, spans = [], []
+
+    def add(kind, severity, text, bbox, detail):
+        x0, y0, x1, y1 = bbox
+        findings.append({"kind": kind, "severity": severity, "text": text.strip()[:40],
+                         "rect": {"x": round(x0), "y": round(y0), "w": round(x1 - x0), "h": round(y1 - y0)},
+                         "detail": detail})
+
+    for bi, block in enumerate(page.get_text("dict", flags=flags)["blocks"]):
+        if block.get("type") != 0:
+            continue
+        lines = []
+        for li, line in enumerate(block["lines"]):
+            text = "".join(s["text"] for s in line["spans"])
+            if text.strip():
+                lines.append((text.strip(), line["bbox"]))
+            for s in line["spans"]:
+                if s["text"].strip():
+                    spans.append((bi, li, s))
+        block_text = " ".join(t for t, _ in lines)
+        bx0, by0, bx1, by1 = block["bbox"]
+        off_page = bx0 < -1 or by0 < -1 or bx1 > width + 1 or by1 > height + 1  # reported below as an error
+        if len(lines) >= 2 and len(lines[-1][0]) == 1 and not off_page:
+            add("orphan_last_line", "warning", block_text, lines[-1][1],
+                "Last line holds one character; rewrite, widen the box or break the line deliberately.")
+        if PLACEHOLDER.search(block_text):
+            add("placeholder", "warning", block_text, block["bbox"], "Looks like placeholder text.")
+        tiny = min((s["size"] for line in block["lines"] for s in line["spans"] if s["text"].strip()), default=99)
+        if tiny < 9:
+            add("font_too_small", "warning", block_text, block["bbox"], f"{tiny:.1f}pt (< 9pt, about 12px).")
+
+    for bi, li, s in spans:
+        x0, y0, x1, y1 = s["bbox"]
+        if x0 < -1 or y0 < -1 or x1 > width + 1 or y1 > height + 1:
+            add("text_outside_slide", "error", s["text"], s["bbox"], "Text runs past the slide edge.")
+
+    def em_box(s):
+        x0, y0, x1, y1 = s["bbox"]
+        inset = max(0.0, (y1 - y0 - s["size"]) / 2)
+        return x0, y0 + inset, x1, y1 - inset
+
+    # Compare every pair of spans: text extraction may merge overlapping boxes into one block or line.
+    # Neighbouring spans and consecutive lines only touch; em-box height ignores line-spacing slack.
+    symbols = re.compile(r"^[\W_]+$")
+    for i, (bi, li, a) in enumerate(spans):
+        if symbols.match(a["text"].strip()):
+            continue
+        A = em_box(a)
+        for bj, lj, b in spans[i + 1:]:
+            if symbols.match(b["text"].strip()):
+                continue
+            B = em_box(b)
+            if min(A[2], B[2]) - max(A[0], B[0]) > 2 and min(A[3], B[3]) - max(A[1], B[1]) > 2:
+                add("text_overlap", "error", a["text"], a["bbox"], f"Overlaps “{b['text'].strip()[:40]}”.")
+                break
+    return findings
+
+
+def pptx_to_pngs(pptx, out_dir, soffice, width, layout=None):
     pm = pymupdf_or_none() or sys.exit("missing dependency PyMuPDF: python -m pip install pymupdf")
     out_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -349,6 +586,8 @@ def pptx_to_pngs(pptx, out_dir, soffice, width):
             path = out_dir / f"slide-{i + 1:02d}.png"
             pix.save(path)
             paths.append(path)
+            if layout is not None:
+                layout.append({"slide": i + 1, "scale": zoom, "findings": pdf_layout(page, pm)})
         doc.close()
     return paths
 
@@ -641,9 +880,19 @@ def cmd_pptx(args):
     if slides_dir.exists():
         shutil.rmtree(slides_dir)
     soffice = find_soffice(args.soffice)
-    pngs = pptx_to_pngs(src, slides_dir, soffice, args.width)
+    layout = []
+    pngs = pptx_to_pngs(src, slides_dir, soffice, args.width, layout)
     report = {"file": str(src), "renderer": "LibreOffice (approximation of PowerPoint)",
-              "slides": len(pngs), "fonts": font_inventory(src), "inventory": inventory(src)}
+              "slides": len(pngs), "fonts": font_inventory(src), "inventory": inventory(src), "layout": layout}
+    layout_dir = out / "layout"
+    if layout_dir.exists():
+        shutil.rmtree(layout_dir)
+    for item in layout:
+        if item["findings"]:
+            draw_layout(slides_dir / f"slide-{item['slide']:02d}.png", item["findings"],
+                        layout_dir / f"slide-{item['slide']:02d}.png", item["scale"])
+    layout_errors = sum(f["severity"] == "error" for item in layout for f in item["findings"])
+    layout_warnings = sum(f["severity"] == "warning" for item in layout for f in item["findings"])
     if args.edit_test:
         if report["inventory"] is None:
             report["edit_test"] = "skipped: python-pptx not installed"
@@ -663,13 +912,23 @@ def cmd_pptx(args):
             print(f"edit test: {checks_status(edit['checks'])}, {len(edit['checks'])} targets; details in report.json")
         else:
             print(f"edit test: {edit}")
+    print(f"layout: {layout_errors} errors, {layout_warnings} warnings"
+          + (f" -> annotated pages in {layout_dir}" if layout_errors or layout_warnings else ""))
+    for item in layout:
+        for f in item["findings"]:
+            print(f"  slide {item['slide']:02d} {f['severity']:<7} {f['kind']:<18} “{f['text']}” {f['detail']}")
 
     expected_pages = len(report["inventory"]) if report["inventory"] is not None else None
     render_status = ("unsupported" if expected_pages is None else
                      "passed" if len(pngs) == expected_pages else "failed")
     report["checks"] = [check("render", render_status, "Compare rendered pages with source slides.",
                               expected=expected_pages, actual=len(pngs)),
-                        check("inventory", "passed" if report["inventory"] is not None else "unsupported")]
+                        check("inventory", "passed" if report["inventory"] is not None else "unsupported"),
+                        check("layout", "failed" if layout_errors else "passed",
+                              f"{layout_errors} errors (outside slide, overlapping text), {layout_warnings} warnings "
+                              "(orphan line, small font, placeholder). Measured on the LibreOffice rendering; "
+                              "PowerPoint/WPS text metrics can differ. No contrast check for PPTX.",
+                              errors=layout_errors, warnings=layout_warnings)]
     edit = report.get("edit_test")
     if isinstance(edit, dict) and edit["checks"]:
         report["checks"].extend(edit["checks"])

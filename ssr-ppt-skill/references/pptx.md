@@ -13,7 +13,29 @@
 
 Codex 桌面先用 `mcp__codex_app__load_workspace_dependencies` 找当前 runtime 与库，不硬编码机器路径。官方 presentations 环境可用时读取其当前 implementation／native_evidence／finalization 文档，遵循实际 API。
 
-其他环境复用现有工具：新建可用 PptxGenJS，模板与局部编辑可用 python-pptx／OOXML；本技能的双格式样例用 python-pptx。现有 `pptx` Skill 的技术方法可参考，视觉与范围按本任务约定。
+其他环境复用现有工具：新建默认用 python-pptx（也可用 PptxGenJS），模板与局部编辑用 python-pptx／OOXML；本技能的双格式样例用 python-pptx。现有 `pptx` Skill 的技术方法可参考，视觉与范围按本任务约定。
+
+用 python-pptx 时，优先借助 `scripts/pptx_kit.py`。它是一组带正确默认值的基础操作，不是版式模板，构图仍按策划自行决定：
+
+- **坐标**：按 1280×720 的画布 px 传入，自动换算成实际幻灯片尺寸。
+- **文字**：每段文字同时写西文与东亚字体；文本框内边距为 0，且不自动缩小字号。
+- **形状**：没有继承的阴影和默认描边。
+- **条形图／柱形图**：保持单一真实系列，按点着色高亮，标签放在柱外，并去掉图例、网格和数值轴。生成的图表能通过 `preview.py` 的自动编辑测试。
+- **表格**：不套内置样式，用细线分行。
+- **图片**：按版位裁切填满，不拉伸。
+- **保存**：可同时设置主题的西文与东亚字体；用公司模板时不改主题。
+
+```python
+import sys; sys.path.insert(0, "<技能目录>/scripts")
+from pptx_kit import Deck
+deck = Deck()                                  # 或 Deck(template="公司模板.pptx")，再用 deck.slide(layout="版式名")
+s = deck.slide(bg="FBF9F4")
+deck.text(s, 80, 96, 1000, 60, "生鲜与餐饮占据近六成订单", size=44, font="Noto Serif SC", bold=True)
+deck.bar_chart(s, 70, 220, 790, 380, ["生鲜", "餐饮", "百货"], [34, 24, 15], highlight={0, 1}, number_format='0"%"')
+deck.save("deck.pptx", theme_fonts=("Noto Serif SC", "Noto Sans SC"))
+```
+
+其余对象（折线图、复杂图解、模板占位符）直接用 python-pptx，并参照上面这些默认值处理。
 
 PptxGenJS 的已知要点（4.0.1 实测）：
 - 默认 `LAYOUT_16x9` 只有 10×5.625 英寸；要 13⅓×7.5 英寸须设 `pptx.layout = 'LAYOUT_WIDE'`。
@@ -79,6 +101,10 @@ python scripts/preview.py pptx build/deck.pptx --out build/review/pptx --edit-te
 - 独立图片裁剪参数改变；
 - 单绘图区、单层字符串类别的簇状条形／柱形／普通折线图：修改数值，核对类别、系列、缓存与标准内嵌工作表。其他图型、外部链接、非标准工作表标为 `unsupported`，补专门测试；
 - 最终与测试副本渲染、所有主题的字体清单。
+- 在 LibreOffice 渲染结果上做版面检查，有问题的页另存标注图到 `layout/`：
+  - 错误：文字超出页面、文字互相重叠。
+  - 警告：末行只剩一个字、字号小于 9pt、疑似占位文字。
+  - 没有对比度检查（拿不到背景）。WPS／PowerPoint 的文字度量可能不同，换行位置以目标应用为准。
 
 脚本不自动验证 Office 拖动节点后连线跟随、图外手写数值联动、图片替换、插行列、动画、字形覆盖或审美质量。所需但未测标 `not_run`，工具做不到标 `unsupported`，不能都记为通过。
 

@@ -17,7 +17,7 @@ python -m unittest discover -s tests -v
 
 POSIX 使用 `SSR_TEST_BROWSER=chromium python -m unittest discover -s tests -v`。未运行／跳过不能说成通过。临时目录需可写；受限环境可为当前进程设置构建目录内的 TEMP／TMP／TMPDIR。
 
-完整示例的生成、逐页预览和编辑目标命令见 [双格式样例](../ssr-ppt-skill/examples/dual-format/README.md)。
+完整示例的生成、逐页预览和编辑目标命令见 [双格式样例](../ssr-ppt-skill/examples/dual-format/README.md)。在不同 agent 之间对比效果的固定任务与评分表见 [跨 agent 对比测试](cross-agent/README.md)。
 
 ## 本次实际结果
 

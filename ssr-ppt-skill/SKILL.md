@@ -1,6 +1,6 @@
 ---
 name: ssr-ppt-skill
-description: "制作、美化或按公司模板修改 PPT、幻灯片、汇报与路演。先组织内容、核准事实和选择表达，再做有记忆点的视觉设计；保存逐页策划并实际预览验收，交付离线 HTML 与原生可编辑 PPTX。适用于 Codex 与 Claude Code；用户提到 SSR-PPT-SKILL、做 PPT、做演示或美化幻灯片时使用。"
+description: "制作、美化或按公司模板修改 PPT、幻灯片、汇报与路演。先组织内容、核准事实和选择表达，再做有记忆点的视觉设计；保存逐页策划并实际预览验收，交付离线 HTML 与原生可编辑 PPTX。适用于支持 SKILL.md 的各类 agent，如 Codex、Claude Code、Cursor、Grok Build、Antigravity；用户提到 SSR-PPT-SKILL、做 PPT、幻灯片、演示文稿、slides、deck 或 PowerPoint 时使用。"
 ---
 
 # SSR-PPT-SKILL
@@ -70,7 +70,7 @@ HTML 内联 `assets/player.css` 与 `player.js`，按许可嵌入所需字体和
 
 按 [visual-review.md](references/visual-review.md) 对照策划，检查信息保真、图形语义、阅读层级、视觉表现与使用场景。
 
-1. 实际打开最终 HTML，逐页查看完全揭示状态，检查离线、字体图片、交互、窄视口及打印；必要时查看播放过程。
+1. 实际打开最终 HTML，先处理 `preview.py html` 版面检查的错误，再逐页查看完全揭示状态，检查离线、字体图片、交互、窄视口及打印；必要时查看播放过程。当前模型不能看图时，按 visual-review 的“不能看图时”处理，并如实写明。
 2. 重新读取、渲染最终 PPTX 并逐页看图。按编辑要求在副本中修改指定对象、保存、重开，核对同一目标的预期变化；分组、图表和矩阵分别覆盖。最终成品不含测试改动。
 3. 记录“通过、失败、未执行、工具不支持、不适用”及任务是否要求该项。脚本的严格模式只汇总其覆盖的自动检查，仍需实际看图；必需能力未执行或不支持不能算完成。
 4. 门槛通过后，有设计自由时按 visual-review 的“出彩检查”自查高冲击页和整套辨识度，有具体可改之处就改；公司模板任务检查模板内的精致度。这是目标，不是门槛。
@@ -79,16 +79,22 @@ HTML 内联 `assets/player.css` 与 `player.js`，按许可嵌入所需字体和
 
 ## 5. 完成交付
 
-交付约定的成品与 `planning.md`，按需附来源和经许可可分发的字体或安装说明。策划中简述实际验收范围与未完成项；源码、截图和测试副本保留在私有构建目录，用户需要时提供。给出真实文件路径；`open_in_codex` 可展示成品，但不替代预览。
+交付约定的成品与 `planning.md`，按需附来源和经许可可分发的字体或安装说明。策划中简述实际验收范围与未完成项；源码、截图和测试副本保留在私有构建目录，用户需要时提供。给出真实文件路径；agent 自带的预览面板（如 Codex 的 `open_in_codex`）可以展示成品，但不能替代预览验收。
 
 达到要求后停止。好设计不止一种，视觉表现按目标和受众判断，不规定 SVG、卡片、字数或高潮页的数量。
 
-## 工具选择
+## 环境与工具
 
-| 环境 | HTML 检查 | PPTX 制作 | PPTX 渲染 | 看图 |
-|---|---|---|---|---|
-| Codex 桌面 | 浏览器工具或 `scripts/preview.py html` | 官方 presentations 环境及 bundled runtime；也可用 PptxGenJS／python-pptx | 官方渲染，或 `scripts/preview.py pptx` | 图像查看能力 |
-| Claude Code | `scripts/preview.py html`（Playwright＋本机 Chrome／Edge），或会话中的浏览器工具 | 新建：PptxGenJS 或 python-pptx；模板与局部修改：python-pptx／OOXML | `scripts/preview.py pptx`（LibreOffice → PDF → PNG） | 用 Read 打开生成的 PNG |
-| 其他 | 已有浏览器自动化 | 已安装的原生 PPTX 库 | 可用渲染器 | 可用的看图方式 |
+动手前先运行 `python scripts/doctor.py`（只用 Python 标准库）。它报告当前环境有哪些能力，并给出建议的制作与验收路线。按能力选路线，不按 agent 品牌选：
+
+| 能力 | 具备时 | 不具备时 |
+|---|---|---|
+| 查看图片：多模态模型，或 agent 的读图工具、视觉插件 | 打开 `preview.py` 生成的 PNG 逐页看图 | 以 `preview.py` 的自动版面检查为主，并在报告中写明“未看图，仅自动检查”；有条件时请用户看图 |
+| 浏览器：Playwright＋Chrome／Edge／Chromium，或 agent 自带的浏览器工具 | `preview.py html` 截图、交互、打印与版面检查 | 只能做 HTML 结构检查，截图、交互和版面检查标为未执行 |
+| LibreOffice＋PyMuPDF | `preview.py pptx` 渲染 PPTX | 只做 python-pptx 的结构与编辑测试，渲染标为未执行 |
+| python-pptx | 新建 PPTX（默认路线，借助 `scripts/pptx_kit.py` 的基础操作）、模板修改、编辑测试 | 用已安装的其他原生库，例如 PptxGenJS |
+| Node.js＋PptxGenJS | 新建 PPTX 的另一选择 | 不必安装 |
+
+agent 特有的能力可以直接复用，例如 Codex 桌面的官方 presentations 环境（见 [pptx.md](references/pptx.md)），或 agent 自带的浏览器与文件预览面板。预览面板只用于展示，不能替代上面的检查。
 
 先检查依赖，按现有授权安装到隔离的构建环境，不更改无关项目的依赖。工具缺失时说明受影响的范围；生成库能打开模板不证明全部对象保真。用户用 WPS 或 PowerPoint 观看时，LibreOffice 渲染只是近似，已知差异见 [pptx.md](references/pptx.md)。

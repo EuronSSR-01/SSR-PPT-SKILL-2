@@ -1,8 +1,8 @@
 # SSR-PPT-SKILL
 
-面向 **Codex** 与 **Claude Code** 的演示制作技能：先组织内容、提炼信息、选择表达，再做视觉设计；保留策划稿与实际预览验收，支持公司模板、离线 HTML 和原生可编辑 PPTX。
+演示制作技能，采用通用的 Agent Skills（`SKILL.md`）格式，可用于 Codex、Claude Code、Cursor、Grok Build、Antigravity 等 agent：先组织内容、提炼信息、选择表达，再做视觉设计；保留策划稿与实际预览验收，支持公司模板、离线 HTML 和原生可编辑 PPTX。
 
-名称保持 **SSR-PPT-SKILL**；调用名为 `ssr-ppt-skill`，Codex 使用 `$ssr-ppt-skill`，Claude Code 使用 `/ssr-ppt-skill`。
+名称保持 **SSR-PPT-SKILL**，技能名为 `ssr-ppt-skill`。调用方式见下文“使用”。
 
 ## 这次升级
 
@@ -27,43 +27,50 @@
 
 ## 安装
 
-把本仓库的 `ssr-ppt-skill` 文件夹放进对应工具的技能目录：
+把本仓库的 `ssr-ppt-skill` 文件夹放进 agent 读取技能的目录。下表是各 agent 文档列出的用户级目录（2026 年 10 月查阅，以各 agent 最新文档为准）：
 
-| 工具 | 技能目录 |
-|---|---|
-| Codex | 设置了 `CODEX_HOME` 时为 `$CODEX_HOME/skills`，否则为 `~/.codex/skills` |
-| Claude Code（个人） | `~/.claude/skills` |
-| Claude Code（单个项目） | `<项目>/.claude/skills` |
+| Agent | 用户级技能目录 | 说明 |
+|---|---|---|
+| Claude Code | `~/.claude/skills` | 项目级为 `<项目>/.claude/skills` |
+| Codex | `$CODEX_HOME/skills`，未设置时为 `~/.codex/skills` | |
+| Cursor | `~/.cursor/skills` 或 `~/.agents/skills` | 项目级为 `.cursor/skills` 或 `.agents/skills`；文档还写明兼容读取 `.claude/skills`、`.codex/skills` |
+| Grok Build | `~/.grok/skills` | 也会读取 `~/.claude/skills` 和 `~/.agents/skills` |
+| Antigravity（agy CLI） | `~/.gemini/antigravity-cli/skills` | 桌面应用与 IDE 为 `~/.gemini/config/skills`；项目级为 `<项目>/.agents/skills` |
+| DeepSeek Harness（dsh） | `~/.dsh/skills` | 来自社区插件 dsh-skills-manager 的说明，未见官方文档；可能需要该插件才能加载 |
 
-### Windows / PowerShell
+**同一个 agent 会读取多个目录时，只装一份**，否则可能出现重名技能。例如已装到 `~/.claude/skills` 时，Grok Build 已能读到，不必再装到 `~/.grok/skills`。
 
-```powershell
-git clone https://github.com/EuronSSR-01/SSR-PPT-SKILL-2.git
-# Codex：
-$ssrSkillsDir = if ($env:CODEX_HOME) { Join-Path $env:CODEX_HOME 'skills' } else { Join-Path $HOME '.codex/skills' }
-# Claude Code 改用：$ssrSkillsDir = Join-Path $HOME '.claude/skills'
-$ssrSkillTarget = Join-Path $ssrSkillsDir 'ssr-ppt-skill'
-if (Test-Path -LiteralPath $ssrSkillTarget) { throw '已存在同名 Skill，请先决定是否更新。' }
-New-Item -ItemType Directory -Path $ssrSkillsDir -Force | Out-Null
-Copy-Item -LiteralPath './SSR-PPT-SKILL-2/ssr-ppt-skill' -Destination $ssrSkillTarget -Recurse
-```
-
-### macOS / Linux
+用仓库自带的安装脚本（只依赖 Python 标准库），`--list` 会显示各目标路径与安装状态：
 
 ```bash
 git clone https://github.com/EuronSSR-01/SSR-PPT-SKILL-2.git
-ssr_skills_dir="${CODEX_HOME:-$HOME/.codex}/skills"   # Claude Code 改用：ssr_skills_dir="$HOME/.claude/skills"
-mkdir -p "$ssr_skills_dir"
-if [ -e "$ssr_skills_dir/ssr-ppt-skill" ]; then
-  printf '%s\n' '已存在同名 Skill，请先决定是否更新。'
-else
-  cp -R ./SSR-PPT-SKILL-2/ssr-ppt-skill "$ssr_skills_dir/"
-fi
+cd SSR-PPT-SKILL-2
+python install.py --list
+python install.py --agent claude --agent agy           # 按需选择，可重复
+python install.py --agent cursor --project /path/to/repo   # 装到某个项目的 .agents/skills
 ```
 
-### 可选依赖
+可选的 `--agent` 有 `claude`、`codex`、`cursor`、`grok`、`agy`、`agy-app`、`agents`（通用的 `~/.agents/skills`）和 `dsh`。目标已存在时脚本不会覆盖；加 `--force` 会先把旧版本移到技能目录旁边的 `skill-backups/` 中备份，再安装新版本。备份放在技能目录之外，避免 agent 把它当成第二个同名技能加载。
 
-脚本只在需要时使用，缺少时 Skill 会说明受影响的验收项：
+### 不支持技能的 agent
+
+把下面这段放进项目的 `AGENTS.md`（或该 agent 读取的规则文件），并把路径改成实际位置：
+
+```markdown
+## 制作 PPT / 演示文稿
+做 PPT、幻灯片、演示文稿或美化已有 PPT 时，先完整阅读
+`<技能目录>/ssr-ppt-skill/SKILL.md` 并按其流程执行；需要时再读其中 references/ 下对应的文件，脚本在 scripts/ 下。
+```
+
+### 依赖
+
+先运行环境自检，它只用 Python 标准库，会列出已有能力并给出建议路线：
+
+```bash
+python ssr-ppt-skill/scripts/doctor.py
+```
+
+按需安装，缺少时 Skill 会说明受影响的验收项：
 
 ```bash
 python -m pip install fonttools brotli playwright pillow pymupdf python-pptx
@@ -71,23 +78,25 @@ python -m pip install fonttools brotli playwright pillow pymupdf python-pptx
 
 - 浏览器：Playwright 会自动使用本机已安装的 Chrome 或 Edge；都没有时运行 `python -m playwright install chromium`。
 - PPTX 渲染需要 LibreOffice。
-- 新建 PPTX 可用已有的 PptxGenJS 或其他原生工具；样例使用 python-pptx，不强制新增项目依赖。
+- 新建 PPTX 默认用 python-pptx；已有 PptxGenJS 也可以用。
 
 ## 使用
 
+调用方式因 agent 而异：Codex 写 `$ssr-ppt-skill`；Claude Code、Cursor、Grok Build 可以用 `/ssr-ppt-skill`；Antigravity 可以用 `/skills` 查看已加载的技能。各 agent 也会根据描述自动匹配，直接说“用 ssr-ppt-skill 做……”即可。
+
 ```text
-使用 $ssr-ppt-skill，基于这些资料做 10 页管理层汇报，
+用 ssr-ppt-skill，基于这些资料做 10 页管理层汇报，
 交付离线 HTML、可编辑 PPTX 和策划稿。
 需求已明确，后续自行判断，不再追问，完成后实际预览与编辑验证。
 ```
 
 ```text
-使用 $ssr-ppt-skill，在这份公司 PPT 模板中制作 6 页方案。
+用 ssr-ppt-skill，在这份公司 PPT 模板中制作 6 页方案。
 仅交付 PPTX，保留母版、字体与品牌规范；遇到关键缺口可以逐个问我。
 ```
 
 ```text
-使用 $ssr-ppt-skill，先整理大纲和逐页策划，暂不制作成品。
+用 ssr-ppt-skill，先整理大纲和逐页策划，暂不制作成品。
 ```
 
 ## 样例与验证
@@ -107,15 +116,31 @@ python -m pip install fonttools brotli playwright pillow pymupdf python-pptx
 - 回归测试增至 10 项，全部通过。新增一项：内嵌工作表里的空 `<v/>` 单元格不能导致检查崩溃。修复前，`preview.py pptx --edit-test` 遇到 PptxGenJS 生成的图表会直接报错退出，连报告都不写。
 - PptxGenJS 单系列逐点着色实测可行：数据仍是一个真实系列，标签可放在柱外。它生成的图表在自动编辑测试中如实标为 `unsupported`，处理方式见 [pptx.md](ssr-ppt-skill/references/pptx.md)。
 
-[维护测试说明](tests/README.md) 记录命令、版本与证据范围。历史版本的其他样稿和模型评价不作为本次验收证据。当前没有 PowerPoint／WPS 实机编辑、多模型效果对照或所有风格的验证；不承诺模型间能力差距被消除。
+为多 agent 使用补充（同一环境）：
+- **环境自检 `doctor.py`**：在完整环境与隔离环境（缺少部分包）下都给出了对应路线。
+- **版面检查**：
+  - HTML：在早先版本的两份示例上，抓到了此前靠看图发现的 4 个问题（标注压字、单位换行、标题末行孤字、时间线标签出界），还抓到 1 处看图时漏掉的文字裁切。
+  - PPTX：在专门构造的缺陷文件上，5 类问题全部检出。
+  - 几份正常示例上没有误报。
+  - 抓不到文字压住图形、箭头互相挤压这类问题。
+- **`pptx_kit.py`**：重建了示例中的 4 页：中西文字体齐全，图表为单一真实系列，7 个编辑目标全部通过，其中包括图表。
+- **安装脚本 `install.py`**：在临时目录中测试了列表、安装、跳过、强制替换（备份放在技能目录之外）与项目级安装。
+- **回归测试**：增至 13 项，全部通过。
+
+[维护测试说明](tests/README.md) 记录命令、版本与证据范围；[跨 agent 对比测试](tests/cross-agent/README.md) 提供固定任务与评分表。
+
+尚未覆盖：Cursor、Grok Build、Antigravity、DeepSeek Harness 中的实际运行（本机没有安装）；PowerPoint／WPS 实机编辑；多模型效果对照；所有风格的验证。
 
 ## 脚本与边界
 
 | 脚本 | 用途 |
 |---|---|
+| `install.py`（仓库根目录） | 把技能安装到各 agent 的技能目录 |
+| `scripts/doctor.py` | 环境自检：已有能力与建议路线（只用标准库） |
+| `scripts/pptx_kit.py` | python-pptx 基础操作：画布坐标、中西文字体、无阴影形状、单系列高亮图表、无样式表格、裁切图片 |
 | `scripts/embed_fonts.py` | HTML 字体子集化、内联及缺字报告；嵌入前核许可 |
-| `scripts/preview.py html` | 离线浏览、图片解码、字体加载、键盘、逐页截图与打印检查 |
-| `scripts/preview.py pptx` | LibreOffice 渲染、对象与所有主题字体清单；指定对象编辑与重开 |
+| `scripts/preview.py html` | 离线浏览、图片解码、字体加载、键盘、逐页截图、打印与版面检查 |
+| `scripts/preview.py pptx` | LibreOffice 渲染、版面检查、对象与所有主题字体清单；指定对象编辑与重开 |
 | `scripts/preview.py sheet / compare` | 总览、灰度／模糊图与方向对照 |
 | `scripts/set_theme_fonts.py` | 指定主题的字体修复；多主题要求明确选择范围 |
 

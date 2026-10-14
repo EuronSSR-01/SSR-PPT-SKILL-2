@@ -85,7 +85,7 @@
   - 逐点着色会让图例按数据点列出，通常设 `showLegend: false`，改为直接标注。
 - 数据标签颜色对全部数据点统一，选在背景上清楚的颜色（通常是次文字色）并放在柱外；放在柱内时要同时检查强调色和浅色柱上的对比度。
 
-**python-pptx**：
+**python-pptx**：条形图和柱形图可以直接用 `scripts/pptx_kit.py` 的 `bar_chart`，它已按以上默认值处理，并通过自动编辑测试（见 [pptx.md](pptx.md)）。自己写时注意：
 
 - `chart.has_legend = False`；`value_axis.has_major_gridlines = False`；`value_axis.visible = False`。
 - 字体：`chart.font.size` / `chart.font.name`，中文需另写东亚字体。
