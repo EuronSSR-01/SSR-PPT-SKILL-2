@@ -5,8 +5,8 @@
   python doctor.py --json     machine-readable report
   python doctor.py --probe    also launch a headless browser through Playwright (slower, more certain)
 
-Standard library only; nothing is installed or changed. Whether the model itself can view images
-cannot be detected from a script: the agent must answer that and pick the matching review route.
+Standard library only; nothing is installed or changed. The skill is for models that can view images
+directly; a script cannot detect that, so the model judges it and stops if it cannot view images.
 """
 import argparse
 import importlib.metadata
@@ -160,8 +160,8 @@ def routes(r):
                            "preview.py pptx --edit-test (structure, fonts and edit test only; no rendering)"),
         "html_fonts": (f"embed with embed_fonts.py: {', '.join(embeddable)}" if pkg["fonttools"] and embeddable else
                        "system fonts with fallbacks (no embeddable CJK font or fontTools)"),
-        "visual_review": "If the model can view images: open the PNGs from preview.py. If not: rely on the "
-                         "layout report from preview.py html and state 'not visually reviewed' in the delivery notes.",
+        "visual_review": "open the PNGs from preview.py and look at every final page. The skill requires a model "
+                         "that can view images; a model that cannot should stop.",
         "text_hints": "visual-first decks: add --visual-first to preview.py html/pptx to list long paragraphs and "
                       "boxes of points (hints only; the pptx check needs no rendering)" if pkg["python-pptx"] or html_check else
                       "missing: python-pptx or an HTML check; review text density by reading the planning",

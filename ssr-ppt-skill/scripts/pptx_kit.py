@@ -11,7 +11,10 @@
     deck.save("deck.pptx", theme_fonts=("Noto Serif SC", "Noto Sans SC"))
 
 All positions and sizes are canvas px (default 1280x720) and are converted with the real slide size,
-so a 1280 px HTML layout maps 1:1. Defaults that prevent known problems:
+so a 1280 px HTML layout maps 1:1. Font sizes (size=) and line widths are canvas px too, not pt: on the
+default 13.333 in wide slide 1 px = 0.75 pt, so 12 pt body text is size=16. For other slide sizes,
+pt = px * slide width (in) * 72 / canvas width; check the real pt in the saved file.
+Defaults that prevent known problems:
 - every run gets both Latin and East Asian fonts (python-pptx alone writes only Latin);
 - text boxes have zero insets and never auto-shrink;
 - shapes have no inherited shadow and no default outline;
