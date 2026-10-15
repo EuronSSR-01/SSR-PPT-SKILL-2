@@ -91,8 +91,10 @@ def run(cmd, timeout=20):
 
 
 def office_apps():
-    """Office apps registered for COM automation on Windows (WPS presentation, PowerPoint). A registered
-    ProgID usually works with preview.py pptx --export; a broken install still fails there, and says so."""
+    """Office apps registered for COM automation on Windows (WPS presentation, PowerPoint). Only the registry
+    is read: a registered ProgID does not prove the app can be driven (a 32-bit-only registration fails, for
+    one), and creating the object here could attach to an app the user has open. preview.py pptx --export
+    shows whether it works and reports a failure."""
     if os.name != "nt":
         return {}
     import winreg
@@ -174,7 +176,10 @@ def routes(r):
     if office and pkg["pymupdf"]:
         app = "wps" if "wps" in office else "powerpoint"
         pptx_render = (f"preview.py pptx --export {app}: {app} exports the final PPTX to PDF (its own line breaks "
-                       "and fonts), then pages and layout check" + ("; LibreOffice for quick drafts" if render else ""))
+                       "and fonts), then pages and layout check. The COM registration is found but not tried; "
+                       "only the export result shows that it works"
+                       + ("; if it fails, and for quick drafts, use LibreOffice" if render else
+                          "; if it fails, export the PDF by hand and pass --pdf"))
     elif render:
         pptx_render = "preview.py pptx: LibreOffice -> PDF -> PNG, plus layout check (an approximation of WPS/PowerPoint)"
     elif pkg["pymupdf"]:
@@ -227,7 +232,9 @@ def main():
           "| Playwright Chromium:", "yes" if b["playwright_bundled_chromium"] else "no",
           f"| probe: {b['probe']}" if b["probe"] is not None else "")
     print("LibreOffice:", report["libreoffice"] or "not found")
-    print("Office export (COM):", ", ".join(f"{k} ({v})" for k, v in report["office_export"].items()) or "none registered")
+    office = ", ".join(f"{k} ({v})" for k, v in report["office_export"].items())
+    print("Office export (COM):", f"{office} registered (not tried; --export shows whether it works)" if office
+          else "none registered")
     print("Node:", report["node"] or "not found", "| pptxgenjs:", "yes" if report["pptxgenjs"] else "no")
     print("CJK fonts:", ", ".join(f"{k}{'' if v['embeddable_license'] else ' (do not embed)'}"
                                   for k, v in report["fonts"].items()) or "none found")

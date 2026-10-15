@@ -14,7 +14,7 @@ html and pptx also report body text per slide; with --visual-first they point at
 of points and text-heavy slides to shorten, move to notes or carry with icons and pictures (hints, not a
 pass/fail check). --zoom also writes four enlarged quarters of every slide for a second, closer look.
 The layout check flags text past its box, one-character lines and a content frame that sits off-centre on
-most slides (warnings to confirm by looking).
+three or more slides (warnings to confirm by looking).
 
 Dependencies: Pillow; html needs playwright (bundled Chromium or installed Chrome/Edge);
 pptx needs PyMuPDF and LibreOffice (or --pdf), and python-pptx for the inventory and --edit-test.
@@ -361,9 +361,10 @@ FRAME_JS = r"""(index) => {
 
 
 def deck_frame(frames, unit, tolerance, threshold):
-    """One warning when most slides share a content frame whose left and right margins differ by more than
-    threshold. frames: [(slide, {left, right, span, width}) or None]. Slides whose content spans less than
-    60% of the width (covers, half-page pictures) are left out. Asymmetric frames can be deliberate."""
+    """One warning when three or more slides share a content frame (the largest such group) whose left and
+    right margins differ by more than threshold. frames: [(slide, {left, right, span, width}) or None].
+    Slides whose content spans less than 60% of the width (covers, half-page pictures) are left out.
+    Asymmetric frames can be deliberate, e.g. a template with a side bar."""
     wide = [(n, f) for n, f in frames if f and f["span"] > 0.6 * f["width"]]
     best, members = None, []
     for n, f in wide:
