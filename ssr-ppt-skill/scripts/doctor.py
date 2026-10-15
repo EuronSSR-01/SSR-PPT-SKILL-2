@@ -90,6 +90,25 @@ def run(cmd, timeout=20):
         return None
 
 
+def office_apps():
+    """Office apps registered for COM automation on Windows (WPS presentation, PowerPoint). A registered
+    ProgID usually works with preview.py pptx --export; a broken install still fails there, and says so."""
+    if os.name != "nt":
+        return {}
+    import winreg
+    found = {}
+    for name, progid in (("wps", "KWPP.Application"), ("powerpoint", "PowerPoint.Application")):
+        for root, path in ((winreg.HKEY_CLASSES_ROOT, progid), (winreg.HKEY_CURRENT_USER, rf"Software\Classes\{progid}"),
+                           (winreg.HKEY_LOCAL_MACHINE, rf"Software\Classes\{progid}")):
+            try:
+                with winreg.OpenKey(root, path):
+                    found[name] = progid
+                    break
+            except OSError:
+                continue
+    return found
+
+
 def probe_browser():
     code = ("from playwright.sync_api import sync_playwright\n"
             "with sync_playwright() as p:\n"
@@ -126,6 +145,9 @@ def collect(probe):
     soffice = next((shutil.which(n) for n in ("soffice.com", "soffice", "libreoffice") if shutil.which(n)), None)
     soffice = soffice or next((p for p in SOFFICE if Path(p).exists()), None)
     report["libreoffice"] = soffice
+    report["office_export"] = office_apps()
+    icons = Path(__file__).resolve().parent.parent / "assets" / "icons"
+    report["icons"] = len(list(icons.glob("*.svg"))) if icons.is_dir() else 0
 
     node = shutil.which("node")
     if node:
@@ -147,25 +169,37 @@ def routes(r):
     has_browser = bool(r["browser"]["probe"] or r["browser"]["installed"] or r["browser"]["playwright_bundled_chromium"])
     html_check = pkg["playwright"] and has_browser
     render = bool(r["libreoffice"]) and pkg["pymupdf"]
+    office = r.get("office_export") or {}
     embeddable = [f for f, v in r["fonts"].items() if v["embeddable_license"]]
+    if office and pkg["pymupdf"]:
+        app = "wps" if "wps" in office else "powerpoint"
+        pptx_render = (f"preview.py pptx --export {app}: {app} exports the final PPTX to PDF (its own line breaks "
+                       "and fonts), then pages and layout check" + ("; LibreOffice for quick drafts" if render else ""))
+    elif render:
+        pptx_render = "preview.py pptx: LibreOffice -> PDF -> PNG, plus layout check (an approximation of WPS/PowerPoint)"
+    elif pkg["pymupdf"]:
+        pptx_render = ("no LibreOffice: pass preview.py pptx --pdf with a PDF exported from the final PPTX "
+                       "(WPS/PowerPoint) for pages and the layout check")
+    else:
+        pptx_render = "missing: PyMuPDF (and LibreOffice); render and layout check reported as not_run"
     out = {
-        "pptx_build": "python-pptx (default)" if pkg["python-pptx"] else
-                      "PptxGenJS (Node)" if r["pptxgenjs"] else "missing: install python-pptx",
+        "pptx_build": ("python-pptx (default) with scripts/pptx_kit.py" if pkg["python-pptx"] else
+                       "PptxGenJS (Node)" if r["pptxgenjs"] else "missing: install python-pptx"),
+        "icons": (f"{r.get('icons', 0)} line icons in assets/icons (pptx_kit Deck.icon / inline SVG in HTML)"
+                  if r.get("icons") else "missing: assets/icons; reinstall the skill"),
         "html_review": "preview.py html: screenshots, interaction, print and layout checks" if html_check else
                        "missing: playwright and a Chromium-family browser; HTML review limited to structure",
-        "pptx_render": "preview.py pptx: LibreOffice -> PDF -> PNG, plus layout check" if render else
-                       "no LibreOffice: pass preview.py pptx --pdf with a PDF exported from the final PPTX "
-                       "(WPS/PowerPoint) for pages and the layout check" if pkg["pymupdf"] else
-                       "missing: PyMuPDF (and LibreOffice); render and layout check reported as not_run",
+        "pptx_render": pptx_render,
         "pptx_edit_test": ("missing: python-pptx" if not pkg["python-pptx"] else
                            "preview.py pptx --edit-test" if render else
                            "preview.py pptx --edit-test (structure, fonts and edit test only; no rendering)"),
         "html_fonts": (f"embed with embed_fonts.py: {', '.join(embeddable)}" if pkg["fonttools"] and embeddable else
                        "system fonts with fallbacks (no embeddable CJK font or fontTools)"),
-        "visual_review": "open the PNGs from preview.py and look at every final page. The skill requires a model "
-                         "that can view images; a model that cannot should stop.",
-        "text_hints": "visual-first decks: add --visual-first to preview.py html/pptx to list long paragraphs and "
-                      "boxes of points (hints only; the pptx check needs no rendering)" if pkg["python-pptx"] or html_check else
+        "visual_review": "open the PNGs from preview.py and look at every final page, then again at the --zoom "
+                         "quarters. The skill requires a model that can view images; a model that cannot should stop.",
+        "text_hints": "visual-first decks: add --visual-first to preview.py html/pptx to list long paragraphs, "
+                      "boxes of points and text-heavy slides (hints only; the pptx check needs no rendering)"
+                      if pkg["python-pptx"] or html_check else
                       "missing: python-pptx or an HTML check; review text density by reading the planning",
     }
     return out
@@ -193,6 +227,7 @@ def main():
           "| Playwright Chromium:", "yes" if b["playwright_bundled_chromium"] else "no",
           f"| probe: {b['probe']}" if b["probe"] is not None else "")
     print("LibreOffice:", report["libreoffice"] or "not found")
+    print("Office export (COM):", ", ".join(f"{k} ({v})" for k, v in report["office_export"].items()) or "none registered")
     print("Node:", report["node"] or "not found", "| pptxgenjs:", "yes" if report["pptxgenjs"] else "no")
     print("CJK fonts:", ", ".join(f"{k}{'' if v['embeddable_license'] else ' (do not embed)'}"
                                   for k, v in report["fonts"].items()) or "none found")

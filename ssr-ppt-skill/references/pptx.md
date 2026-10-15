@@ -9,6 +9,8 @@
 
 模板先做一个代表页的“打开—修改—保存—重开—渲染”试验。比较未修改页面、母版／版式关系、主题、占位符、备注与链接。字体修复只针对已确认的问题，不默认运行全局覆盖脚本。
 
+内容区以模板为准：读取母版和所用版式的正文占位符位置（python-pptx 的 `slide_layout.placeholders`／`slide_master.placeholders`），把它作为内容的左右边界，或让左右边距分别对齐页眉的标题与标志；写进策划稿，所有内容页共用。模板的示例文字（封面日期、部门名、示例标题）不是材料，替换前列为待确认。
+
 ## 工具选择
 
 Codex 桌面先用 `mcp__codex_app__load_workspace_dependencies` 找当前 runtime 与库，不硬编码机器路径。官方 presentations 环境可用时读取其当前 implementation／native_evidence／finalization 文档，遵循实际 API。
@@ -23,6 +25,8 @@ Codex 桌面先用 `mcp__codex_app__load_workspace_dependencies` 找当前 runti
 - **条形图／柱形图**：保持单一真实系列，按点着色高亮，标签放在柱外，并去掉图例、网格和数值轴。生成的图表能通过 `preview.py` 的自动编辑测试。
 - **表格**：不套内置样式，用细线分行。
 - **图片**：按版位裁切填满，不拉伸。
+- **图标**：`icon(slide, "truck", x, y, size=32, color="1E5AA8")` 把 `assets/icons/` 的线性图标（或任意线性 SVG 文件）做成一个原生形状，在 PowerPoint／WPS 里能改颜色、缩放不糊；`stroke` 调线宽（默认 2，大图标可用 1.5）。
+- **SVG 插画**：`svg_picture(slide, "build/truck.svg", x, y, w, h)` 用 PyMuPDF 把 SVG 按版位的 2 倍分辨率转成 PNG 插入；SVG 源文件留在构建目录，改完重新生成。
 - **保存**：可同时设置主题的西文与东亚字体；用公司模板时不改主题。
 
 ```python
@@ -31,7 +35,9 @@ from pptx_kit import Deck
 deck = Deck()                                  # 或 Deck(template="公司模板.pptx")，再用 deck.slide(layout="版式名")
 s = deck.slide(bg="FBF9F4")
 deck.text(s, 80, 96, 1000, 60, "生鲜与餐饮占据近六成订单", size=44, font="Noto Serif SC", bold=True)
-deck.bar_chart(s, 70, 220, 790, 380, ["生鲜", "餐饮", "百货"], [34, 24, 15], highlight={0, 1}, number_format='0"%"')
+deck.icon(s, "shopping-cart", 80, 220, size=40, color="E8590C")
+deck.bar_chart(s, 70, 280, 790, 340, ["生鲜", "餐饮", "百货"], [34, 24, 15], highlight={0, 1}, number_format='0"%"')
+deck.svg_picture(s, "build/store.svg", 900, 220, 300, 300)
 deck.save("deck.pptx", theme_fonts=("Noto Serif SC", "Noto Sans SC"))
 ```
 
@@ -41,7 +47,9 @@ PptxGenJS 的已知要点（4.0.1 实测）：
 - 默认 `LAYOUT_16x9` 只有 10×5.625 英寸；要 13⅓×7.5 英寸须设 `pptx.layout = 'LAYOUT_WIDE'`。
 - `scripts/preview.py` 的图表自动编辑测试只接受 python-pptx 的内嵌工作表布局，PptxGenJS 生成的图表会如实标为 `unsupported`。图表的数据编辑是必需项时，二选一：用 python-pptx 生成该图表；或在 WPS／PowerPoint 中实际修改数据、保存重开并记录结果。不能把 `unsupported` 当作通过。
 
-渲染可用目标 Office、WPS 或 LibreOffice＋PyMuPDF。字体度量和排版可能不同，报告实际渲染器，不把 LibreOffice 等同于 PowerPoint／WPS 实机验收。没有 LibreOffice 时，可用 `preview.py pptx --pdf <PDF>` 传入 WPS、PowerPoint 等导出的 PDF，生成逐页图并做版面检查；PDF 必须由同一份最终 PPTX 导出，PPTX 改过后重新导出。报告记录两者的哈希，PDF 比 PPTX 旧时给出警告。LibreOffice 渲染有两个已知差异，看图时不要误判：
+渲染优先用观众会用的软件。Windows 上装了 WPS 或 PowerPoint 时，`preview.py pptx --export wps`（或 `powerpoint`）通过 COM 让该软件以只读、无窗口方式打开最终 PPTX、导出 PDF，再逐页出图和做版面检查：换行、字体和字距就是观众看到的样子。脚本只关闭它自己打开的这份文件；导出前 WPS／PowerPoint 已在运行时不退出软件，不影响用户已打开的文件。导出失败时报告写明原因，渲染记为失败。
+
+没有这两个软件时用 LibreOffice＋PyMuPDF（近似），或用 `--pdf <PDF>` 传入手动从最终 PPTX 导出的 PDF。PDF 必须由同一份最终 PPTX 导出，PPTX 改过后重新导出；报告记录两者的哈希，PDF 比 PPTX 旧时给出警告。报告写明实际渲染器，不把 LibreOffice 等同于 WPS／PowerPoint；`--export` 也只说明 PDF 由该软件导出，在软件里实际编辑另需实机操作。LibreOffice 渲染有两个已知差异，看图时不要误判：
 - 会自动在汉字与西文、数字之间加间距，叠加手动空格后显得偏宽；PowerPoint 不会这样显示。
 - 西文字体本身含汉字时会直接用它显示中文，所以东亚字体缺失的问题在 LibreOffice 中看不出来，要以报告里的字体清单为准。
 
@@ -57,7 +65,8 @@ PptxGenJS 的已知要点（4.0.1 实测）：
 | 条形、折线、占比等统计图表 | 默认原生图表，保留类别、系列、数值、单位和底层数据编辑，检查改值后图形与数据同步。材料给出口径清楚、适合所选图型的分类与数值即可建立内嵌数据，不要求外部表格或时间序列 |
 | 流程、架构、机制图需逐元素编辑 | 原生形状、文字和连接线；按需检查节点、分组、连接绑定与移动后的关系 |
 | 单个大数字、编号、数量型机制示意 | 可用文字／形状；不能把统计图改名为示意图以降低编辑要求 |
-| 照片、插画、局部图标、标志 | 独立图片，可移动／裁剪；要求替换则另测替换，不宣称内容逐元素可编辑 |
+| 图标 | `pptx_kit` 的 `icon()` 生成的原生形状，可改颜色、缩放和移动 |
+| 照片、SVG 插画、标志 | 独立图片，可移动／裁剪；要求替换则另测替换，不宣称内容逐元素可编辑 |
 | 用户要求保留的原图 | 保留并说明编辑范围 |
 
 整页图片或整页 SVG 不满足可编辑文字与图表要求。插入 SVG 不自动成为原生形状、文字或带数据图表。形状图里可改的数字不等于改数据后图形会自动更新；需要联动就实现并验证。
@@ -101,10 +110,12 @@ python scripts/preview.py pptx build/deck.pptx --out build/review/pptx --edit-te
 - 独立图片裁剪参数改变；
 - 单绘图区、单层字符串类别的簇状条形／柱形／普通折线图：修改数值，核对类别、系列、缓存与标准内嵌工作表。其他图型、外部链接、非标准工作表标为 `unsupported`，补专门测试；
 - 最终与测试副本渲染、所有主题的字体清单。
-- 在渲染结果（LibreOffice，或 `--pdf` 传入的 PDF）上做版面检查，有问题的页另存标注图到 `layout/`：
+- 在渲染结果（`--export` 导出的 PDF、LibreOffice，或 `--pdf` 传入的 PDF）上做版面检查，有问题的页另存标注图到 `layout/`：
   - 错误：文字超出页面、文字互相重叠。
-  - 警告：末行只剩一个字、字号小于 9pt、疑似占位文字、线条穿过文字。线条穿字逐字判断：后画的填充形状挡住的线、贴合整段文字的删除线、文字下方的下划线不算；看图确认，有意的设计可以保留。
-  - 没有对比度检查（拿不到背景）。WPS／PowerPoint 的文字度量可能不同，换行位置以目标应用为准。
+  - 警告：一行只剩一个字（末行或强制换行前，标点不计）、文字从卡片或底框跑出来、字号小于 9pt、疑似占位文字、线条穿过文字，以及多数页的内容区左右边距不等（整套一条）。线条穿字逐字判断：后画的填充形状挡住的线、贴合整段文字的删除线、文字下方的下划线不算。警告都要看图确认，有意的设计可以保留。
+  - 没有对比度检查（拿不到背景）。换行位置以目标应用为准，所以有 WPS／PowerPoint 时用 `--export`。
+- `--zoom` 另存每页四个放大的象限到 `zoom/`，用于第二遍细看。
+- 编辑测试摘要按对象类型列出实际测试的目标，并指出文件里没有的原生图表或表格；验收记录照此填写。
 
 脚本不自动验证 Office 拖动节点后连线跟随、图外手写数值联动、图片替换、插行列、动画、字形覆盖或审美质量。所需但未测标 `not_run`，工具做不到标 `unsupported`，不能都记为通过。
 

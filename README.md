@@ -1,30 +1,30 @@
 # SSR-PPT-SKILL
 
-演示制作技能，采用通用的 Agent Skills（`SKILL.md`）格式，可用于 Codex、Claude Code、Cursor、Grok Build、Antigravity 等 agent：先组织内容、提炼信息、选择表达，再做视觉设计；保留策划稿与实际预览验收，支持公司模板、离线 HTML 和原生可编辑 PPTX。仅供能直接查看图片的模型使用。
+演示制作技能，采用通用的 Agent Skills（`SKILL.md`）格式，可用于 Codex、Claude Code、Cursor、Grok Build、Antigravity、DeepSeek Harness 等 agent：借助风格配方、版式原型、字体与中文排版、图标与配图、逐页策划和实际渲染验收，做出好看、有记忆点、字少图多的演示；支持公司模板、离线 HTML 和原生可编辑 PPTX。仅供能直接查看图片的模型使用。
 
 名称保持 **SSR-PPT-SKILL**，技能名为 `ssr-ppt-skill`。调用方式见下文“使用”。
 
 ## 这次升级
 
-- **内容先行**：观点与证据、文字精简、数据口径、机制关系、表格重表达，避免为了好看遗漏条件或混淆事实。
-- **开场两问**：继承已有偏好；尚未明确的，开始前用同一条消息问：① 是否允许先询问几个问题；② 表达方式选“图示优先”还是“图文均可”。两问都有答复再开始。允许询问则逐个问必要问题，自主模式连续判断，缺事实不编造；自主模式下没说表达方式时按图示优先，并在策划中写明。策划、方向比较不自动成为审批关卡。
-- **图示优先（默认）**：能用图表达的信息都画成图，页面文字只留结论、标签、关键数字和条件；先提取关系再选图，不把要点装进卡片冒充图示，也不补造关系或可比性。`preview.py --visual-first` 指出过长的段落和文字卡片，只作复查线索。选“图文均可”时按内容选择，接受文字较多的页面。
-- **只供能看图的模型使用**：制作和验收都要实际查看渲染后的页面；模型不能看图时直接停止，不交付未经看图的成品。OCR、自动检查或另一个模型的描述都不能代替看图。
-- **门槛与目标分开**：事实、基础版面完成度（主次清楚，无意外遮挡、挤压或线条穿字，图形不错误表达数值，实际字号可读）和编辑合同是必须通过的门槛；记忆点是目标，有设计自由时用“出彩检查”（去品牌、截图、模糊、灰度测试与精修）自查，公司模板任务检查模板内的精致度。字体比例、色彩面积、配方、高潮页与版式数量是可调整方法。保留 13 套配方、22 个原型，不要求硬套。
-- **图片按作用选**：真实证据用真实来源，概念氛围可用专用生图模型或搜索，流程与架构用有语义的 SVG／原生图解。
-- **表格按操作选**：可精简、聚合、重组为图表或矩阵；需要增删行列用原生表格，只需改字、移动的矩阵可用原生色块和文字。统计图默认保留底层数据编辑。
-- **制作路线分流**：新建双格式先验证 HTML／SVG 代表页与原生 PPTX 代表页；公司模板和局部修改原生优先，保护主题、母版、占位符、备注和链接。
-- **检查真正的变化**：递归定位分组内对象，核对修改前／预期／实际值；明确失败、未执行、工具不支持与不适用，避免把“对象还存在”当作成功。
+- **设计规则回到第一版**：风格配方、版式原型、视觉定调、反模式、字体、图表和策划的写法回到 SKILL 2 的第一版（8de60d2）。后来加的“内容先行”和“图示优先就是多画关系图”的规则撤下，它们让成品文字越来越多、信息图越来越密。脚本和工具的改进保留。
+- **图示优先＝图片、图标、示意插画**：凡是能用图来表示的文字，尽量用图来表示。这里的图首先是好看的图：表头、卡片、流程节点和关键数字配图标；讲主体、场景、产品时上网搜授权合适的图片，或用 SVG 画出产品、物件和场景的示意。图里基本不放字，不追求塞满文字的信息图。页面只留结论、关键数字和短标签，解释放备注，同一句话不在多页重复。
+- **自带图标库**：`assets/icons/` 收录 127 个 Lucide 线性图标（ISC 许可，索引含中文含义）。`pptx_kit.py` 的 `icon()` 把图标做成 PowerPoint／WPS 里能改颜色、缩放不糊的原生形状；`svg_picture()` 把 SVG 插画按 2 倍分辨率转成图片插入。
+- **开场两问**：继承已有偏好；尚未明确的，开始前用同一条消息问：① 是否允许先询问几个问题；② 表达方式选“图示优先”还是“图文均可”。“需求明确时连续完成”只表示不必逐步确认，不等于不许提问；只有“不要问我”“你自己判断”才算不问。不让问又没说表达方式时，按图示优先并在策划中写明。
+- **只供能看图的模型使用**：制作和验收都要实际查看渲染后的页面；模型不能看图时直接停止。OCR、自动检查或另一个模型的描述都不能代替看图。
+- **把好模型会做的事写成步骤和脚本**：
+  - `preview.py pptx --export wps`（或 `powerpoint`）：在 Windows 上让 WPS／PowerPoint 把最终 PPTX 导出为 PDF 再检查，看到的就是观众看到的换行和字体；
+  - `--zoom`：每页另出四个放大的象限，整页看一遍后再细看一遍；
+  - 版面检查新增警告：一行只剩一个字（标点不计，含强制换行前）、文字跑出卡片或底框、多数页的内容区偏向一侧；
+  - 编辑测试按对象类型汇总实际测了什么，避免验收记录写成“测过图表和表格”。
+- **门槛不变**：事实与口径准确（不补造数字、关系和可比性）、版面完成、对象符合编辑要求、模板保护；记忆点是目标，用“出彩检查”自查。保留 13 套配方、22 个原型，推荐优先、不硬套。
 
 未指定格式默认 HTML＋PPTX＋`planning.md`；仅要求一种格式、大纲、样稿或局部修改，就只完成约定范围。精确页数包含封面与结束页。
 
 ## 工作方式
 
-明确任务 → 形成策划 → 设计与适配 → 实际预览验收 → 完成交付。
+建立需求与证据 → 大纲与策划稿 → 定义视觉方向 → 制作交付格式 → 实际预览验收 → 交付。
 
-内容问题回到策划，布局或实现问题回到制作。方向不明确时才做方向比较，代表页挑最能暴露风险的内容；短任务不机械运行多套流程。
-
-视觉部分保留字体与中文排版、风格配方、构图原型和图片手法。HTML 播放器保留缩放、键盘／触屏翻页、逐步揭示、概览、备注、全屏、黑屏、网址页码与打印。
+方向不明确时先做方向比较，再用代表页校准，最后推广到全套。视觉部分包括字体与中文排版、风格配方、构图原型、图标、配图与插画手法。HTML 播放器保留缩放、键盘／触屏翻页、逐步揭示、概览、备注、全屏、黑屏、网址页码与打印。
 
 
 ## 安装
@@ -79,7 +79,7 @@ python -m pip install fonttools brotli playwright pillow pymupdf python-pptx
 ```
 
 - 浏览器：Playwright 会自动使用本机已安装的 Chrome 或 Edge；都没有时运行 `python -m playwright install chromium`。
-- PPTX 渲染需要 LibreOffice；没有时，可用 `preview.py pptx --pdf` 传入 WPS／PowerPoint 由最终 PPTX 导出的 PDF。
+- PPTX 渲染：Windows 上装了 WPS 或 PowerPoint 时用 `preview.py pptx --export wps`（或 `powerpoint`）；否则用 LibreOffice，或用 `--pdf` 传入由最终 PPTX 导出的 PDF。
 - 新建 PPTX 默认用 python-pptx；已有 PptxGenJS 也可以用。
 
 ## 使用
@@ -104,8 +104,6 @@ python -m pip install fonttools brotli playwright pillow pymupdf python-pptx
 ## 样例与验证
 
 [双格式样例](ssr-ppt-skill/examples/dual-format/README.md) 共享一份虚构数据生成 4 页 HTML 和原生 PPTX，含长中文、分组流程、形状矩阵、统计图、原生表格和独立图片。它是可复现的有限路径，不是通用 HTML 转 PPTX 引擎。
-
-[教学案例](ssr-ppt-skill/references/worked-examples.md) 展示科研资源、零售补货、产品比较、培训须知和申请支持事项的材料提炼、表达选择、页面与检查点，包含三张可直接查看的 SVG 页面、“保留文字更清楚”的案例，以及“长段落、仅套框、有效图示”的对照。
 
 本次在 Codex／Windows 中验证：
 - 9 项回归测试通过，含损坏内联图片、减少动态效果、分组文字、表格原有勾号、图表未改值、未支持图型和多主题／母版保留。
@@ -152,6 +150,18 @@ python -m pip install fonttools brotli playwright pillow pymupdf python-pptx
   - 已用 LibreOffice 导出的 PDF 验证；本机 WPS 的 COM 接口无法调用，WPS 导出的 PDF 尚未实测。
 - 回归测试增至 21 项（含 4 项浏览器测试），全部通过。
 
+回到第一版设计规则并加入图标与配图（同一环境）：
+- 起因：用户比较 DSH 的几次结果后认为，第二次（技能第一版）做的模板版基本可接受，只是字多；之后几版越改越偏，第四次正文字数约为第三次的两倍，页面写满口径说明和重复内容，还出现了文字跑出卡片、孤字、全套内容区偏右等问题。用户想要的“图”是好看的图片、图标和示意插画，不是更多的信息图。
+- 改动：设计规则回到第一版；“图示优先”改为用图片、图标、示意插画代替文字；新增图标库、`icon()`、`svg_picture()`、`--export`、`--zoom` 和三类版面警告；开场两问的措辞修正。
+- 图标：127 个图标全部转成原生形状，在 LibreOffice 渲染中逐个看过，形状、线宽和颜色正确。
+- 新的版面警告在 11 份 PPTX 上的结果：
+  - 第四次模板版报出 4 处孤字（含“间；”“性。”和强制换行前单独一行的“在”）、2 处文字跑出卡片，以及全套内容区左 79pt、右 38pt 的偏移，都与看图一致；
+  - 第二次和第三次分别报出 4 处、1 处此前没人发现的孤字，看图确认属实；
+  - 原稿、模板、本仓库的双格式样例和另外四份演示文件都没有误报。
+- 修复：LibreOffice 会忽略空的效果列表，照样画出形状引用的主题阴影；`pptx_kit` 的矩形、圆形和图标改为去掉主题样式引用，各渲染器都不再出现阴影。
+- 回归测试增至 29 项（含 5 项浏览器测试），全部通过；双格式样例重新生成后严格检查通过，版面 0 错误 0 警告，11 个编辑目标通过。
+- `--export` 尚未在能正常调用 WPS 的电脑上实测：本机 WPS 的 COM 接口无法调用，脚本如实报告导出失败、渲染记为失败。
+
 [维护测试说明](tests/README.md) 记录命令、版本与证据范围；[跨 agent 对比测试](tests/cross-agent/README.md) 提供固定任务与评分表。
 
 尚未覆盖：Cursor、Grok Build、Antigravity、DeepSeek Harness 中的实际运行（本机没有安装）；PowerPoint／WPS 实机编辑；多模型效果对照；所有风格的验证。
@@ -162,10 +172,11 @@ python -m pip install fonttools brotli playwright pillow pymupdf python-pptx
 |---|---|
 | `install.py`（仓库根目录） | 把技能安装到各 agent 的技能目录 |
 | `scripts/doctor.py` | 环境自检：已有能力与建议路线（只用标准库） |
-| `scripts/pptx_kit.py` | python-pptx 基础操作：画布坐标、中西文字体、无阴影形状、单系列高亮图表、无样式表格、裁切图片 |
+| `scripts/pptx_kit.py` | python-pptx 基础操作：画布坐标、中西文字体、无阴影形状、图标（原生形状）、SVG 插画、单系列高亮图表、无样式表格、裁切图片 |
+| `assets/icons/` | 127 个 Lucide 线性图标（ISC 许可），`INDEX.md` 列出名称与中文含义 |
 | `scripts/embed_fonts.py` | HTML 字体子集化、内联及缺字报告；嵌入前核许可 |
-| `scripts/preview.py html` | 离线浏览、图片解码、字体加载、键盘、逐页截图、打印与版面检查；每页正文字数，`--visual-first` 时提示长文字 |
-| `scripts/preview.py pptx` | LibreOffice 渲染（或 `--pdf` 传入由最终 PPTX 导出的 PDF）、版面检查（含线条穿字提示）、对象与所有主题字体清单；指定对象编辑与重开；每页正文字数，`--visual-first` 时提示长文字（不需要渲染） |
+| `scripts/preview.py html` | 离线浏览、图片解码、字体加载、键盘、逐页截图、打印与版面检查；`--zoom` 放大局部；每页正文字数，`--visual-first` 时提示长文字和字多的页 |
+| `scripts/preview.py pptx` | `--export wps／powerpoint` 由目标软件导出 PDF，或 LibreOffice 渲染，或 `--pdf` 传入 PDF；版面检查（孤字、文字跑出卡片、线条穿字、内容区偏一侧等）、对象与所有主题字体清单；指定对象编辑与重开，按类型汇总；`--zoom` 放大局部；每页正文字数，`--visual-first` 时提示长文字（不需要渲染） |
 | `scripts/preview.py sheet / compare` | 总览、灰度／模糊图与方向对照 |
 | `scripts/set_theme_fonts.py` | 指定主题的字体修复；多主题要求明确选择范围 |
 
@@ -177,10 +188,9 @@ python -m pip install fonttools brotli playwright pillow pymupdf python-pptx
 
 ## 文件导航
 
-- [SKILL.md](ssr-ppt-skill/SKILL.md)：五阶段入口与按需读取路由。
-- [策划](ssr-ppt-skill/references/planning.md)、[内容表达](ssr-ppt-skill/references/content-expression.md)、[教学案例](ssr-ppt-skill/references/worked-examples.md)。
-- [设计参考](ssr-ppt-skill/references/design-reference.md)、[视觉定调](ssr-ppt-skill/references/art-direction.md)、[13 套配方](ssr-ppt-skill/references/style-recipes.md)、[22 个原型](ssr-ppt-skill/references/layouts.md)。
-- [字体](ssr-ppt-skill/references/typography.md)、[图片](ssr-ppt-skill/references/imagery.md)、[图表和表格](ssr-ppt-skill/references/charts.md)、[视觉诊断](ssr-ppt-skill/references/anti-patterns.md)。
+- [SKILL.md](ssr-ppt-skill/SKILL.md)：六个步骤的入口，开场两问与表达方式。
+- [策划](ssr-ppt-skill/references/planning.md)、[视觉定调](ssr-ppt-skill/references/art-direction.md)、[13 套配方](ssr-ppt-skill/references/style-recipes.md)、[22 个原型](ssr-ppt-skill/references/layouts.md)。
+- [字体](ssr-ppt-skill/references/typography.md)、[图标与配图](ssr-ppt-skill/references/imagery.md)、[图表和表格](ssr-ppt-skill/references/charts.md)、[反模式](ssr-ppt-skill/references/anti-patterns.md)、[图标索引](ssr-ppt-skill/assets/icons/INDEX.md)。
 - [HTML](ssr-ppt-skill/references/html.md)、[PPTX](ssr-ppt-skill/references/pptx.md)、[实际验收](ssr-ppt-skill/references/visual-review.md)。
 
 播放器资源内联进成品，不引用技能安装目录；构建结果放在已忽略的 `.build/`。

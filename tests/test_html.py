@@ -40,6 +40,7 @@ class HtmlTests(unittest.TestCase):
             f'<p data-bleed {abs_}left:1150px;top:300px;font-size:120px;white-space:nowrap">出血</p>'
             f'<div {abs_}left:80px;top:400px;width:300px;height:30px;overflow:hidden;font-size:24px">被容器裁掉的两行文字被容器裁掉的两行文字</div>'
             f'<p {abs_}left:80px;top:500px;width:170px;font-size:40px">一二三四五</p>'
+            f'<p {abs_}left:300px;top:500px;width:170px;font-size:40px">六七八九十；</p>'
             f'<p {abs_}left:500px;top:500px;font-size:10px">字号太小</p>'
             f'<p {abs_}left:700px;top:500px;font-size:20px;color:#cccccc">对比度不足</p>'
             f'<p {abs_}left:500px;top:600px;font-size:20px">TODO 补充数据</p>'
@@ -60,10 +61,12 @@ class HtmlTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads((work / "review/report.json").read_text(encoding="utf-8"))
             first = {f["kind"] for f in report["layout"][0]["findings"]}
-            for kind in ("text_overlap", "text_outside_slide", "text_clipped", "orphan_last_line",
+            for kind in ("text_overlap", "text_outside_slide", "text_clipped", "orphan_line",
                          "font_too_small", "low_contrast", "placeholder"):
                 self.assertIn(kind, first)
             texts = [f["text"] for f in report["layout"][0]["findings"]]
+            orphans = [f["text"] for f in report["layout"][0]["findings"] if f["kind"] == "orphan_line"]
+            self.assertIn("六七八九十；", orphans)       # one character plus punctuation on the last line
             self.assertNotIn("出血", texts)            # data-bleed opt-out
             self.assertNotIn("“", texts)              # decorative punctuation is not an overlap
             self.assertEqual(report["layout"][1]["findings"], [])
@@ -99,6 +102,28 @@ class HtmlTests(unittest.TestCase):
             self.assertEqual(plain.returncode, 0, plain.stderr)
             text = json.loads((work / "plain/report.json").read_text(encoding="utf-8"))["text"]
             self.assertEqual([s["findings"] for s in text["slides"]], [[], []])
+
+    def test_off_centre_frame_and_zoom_quarters(self):
+        css = (SKILL / "assets/player.css").read_text(encoding="utf-8")
+        js = (SKILL / "assets/player.js").read_text(encoding="utf-8")
+        page = ('<h1 style="position:absolute;left:120px;top:20px;margin:0;font-size:40px">标题</h1>'
+                '<div style="position:absolute;left:120px;top:160px;width:1120px;height:360px;background:#eef">'
+                '<p style="margin:24px;font-size:22px">正文区整体偏右</p></div>')
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            deck = work / "frame.html"
+            slides = "".join(f'<section class="ssr-slide">{page}</section>' for _ in range(3))
+            deck.write_text('<!doctype html><meta charset="utf-8"><style>' + css + '</style><div class="ssr-player">'
+                            '<main class="ssr-stage"><div id="ssr-deck" data-width="1280" data-height="720">'
+                            f'{slides}</div></main></div><script>' + js + '</script>', encoding="utf-8")
+            result = subprocess.run([sys.executable, str(SKILL / "scripts/preview.py"), "html", str(deck), "--out",
+                                     str(work / "review"), "--browser", BROWSER, "--no-pdf", "--zoom"],
+                                    capture_output=True, timeout=90)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads((work / "review/report.json").read_text(encoding="utf-8"))
+            self.assertEqual([f["kind"] for f in report["deck_layout"]], ["content_frame_off_centre"])
+            self.assertEqual((report["deck_layout"][0]["left"], report["deck_layout"][0]["right"]), (120, 40))
+            self.assertEqual(len(list((work / "review/zoom").glob("*.png"))), 12)
 
     def test_reduced_motion_keeps_manual_steps_but_print_reveals(self):
         from playwright.sync_api import sync_playwright

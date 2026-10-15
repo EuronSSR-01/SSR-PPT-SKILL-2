@@ -1,6 +1,8 @@
 """Regression tests for observable edits and template preservation. No Office UI claim."""
+import contextlib
 import copy
 import importlib.util
+import io
 from io import BytesIO
 import json
 import os
@@ -283,7 +285,9 @@ class KitTests(unittest.TestCase):
             self.assertIn("2D5ABB26", ET.tostring([sh for sh in slide.shapes if sh.has_table][0]._element).decode())
             # 1600x600 into a square keeps the centre 600/1600 of the width: each side loses (1 - 0.375) / 2
             self.assertAlmostEqual(next(sh for sh in slide.shapes if sh.shape_id == pic.shape_id).crop_left, 0.3125, places=4)
-            self.assertIsNotNone(next(sh for sh in slide.shapes if sh.shape_id == box.shape_id)._element.find(".//" + qn_effect))
+            rect = next(sh for sh in slide.shapes if sh.shape_id == box.shape_id)._element
+            self.assertIsNotNone(rect.find(".//" + qn_effect))
+            self.assertIsNone(rect.find("{http://schemas.openxmlformats.org/presentationml/2006/main}style"))  # no theme shadow
             with zipfile.ZipFile(src) as z:
                 self.assertIn(b'<a:ea typeface="Test Sans"/>', z.read("ppt/theme/theme1.xml"))
             result = preview.edit_test(src, work / "edit", targets=[
@@ -317,6 +321,53 @@ class KitTests(unittest.TestCase):
         self.assertIn('<c:tickLblPos val="low"/>', xml)
         with self.assertRaises(ValueError):
             Deck().bar_chart(Deck().slide(), 0, 0, 100, 100, ["a"], [None])
+
+    def test_icons_are_native_line_shapes_and_svg_becomes_a_picture(self):
+        sys.path.insert(0, str(SCRIPTS))
+        try:
+            import pptx_kit
+        finally:
+            sys.path.remove(str(SCRIPTS))
+        a = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+        # Path parsing: relative commands, H/V, packed arc flags ("012 2") and closepath.
+        subs = pptx_kit.svg_path_to_subpaths("M1 1h4v4H1zm8 0a2 2 0 012 2")
+        self.assertEqual(subs[0][-2:], [("L", 1.0, 5.0), ("Z",)])
+        self.assertEqual(subs[1][0], ("M", 9.0, 1.0))
+        self.assertEqual(subs[1][-1][0], "C")
+        self.assertAlmostEqual(subs[1][-1][-2], 11.0)
+        self.assertAlmostEqual(subs[1][-1][-1], 3.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            deck = pptx_kit.Deck()
+            s = deck.slide()
+            icon = deck.icon(s, "factory", 80, 80, size=48, color="1E5AA8")
+            custom = work / "dot.svg"
+            custom.write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+                              '<circle cx="5" cy="5" r="4" fill="#000"/><line x1="0" y1="0" x2="10" y2="10"/></svg>',
+                              encoding="utf-8")
+            deck.icon(s, custom, 200, 80, size=48, color="E8590C")
+            with self.assertRaises(KeyError):
+                deck.icon(s, "no-such-icon", 0, 0)
+            svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 120"><rect x="10" y="40" width="80" '
+                   'height="60" rx="6" fill="#E8F1FA" stroke="#1E5AA8" stroke-width="3"/></svg>')
+            pic = deck.svg_picture(s, svg, 400, 80, 300, 180, out=work / "truck.png")
+            src = deck.save(work / "icons.pptx")
+            with Image.open(work / "truck.png") as png:
+                self.assertEqual(png.size, (600, 360))                          # twice the box size
+            slide = Presentation(src).slides[0]
+            shape = next(sh for sh in slide.shapes if sh.shape_id == icon.shape_id)
+            xml = ET.tostring(shape._element).decode()
+            self.assertIn("custGeom", xml)
+            self.assertNotIn("prstGeom", xml)
+            self.assertNotIn("p:style", xml)                                   # no theme shadow
+            self.assertIn('fill="none"', xml)                                   # line icon: paths not filled
+            self.assertIn("cubicBezTo", xml)                                    # arcs became curves
+            ln = shape._element.find(f".//{a}ln")
+            self.assertEqual(ln.get("cap"), "rnd")
+            self.assertEqual(ln.find(f".//{a}srgbClr").get("val"), "1E5AA8")
+            filled = ET.tostring(slide.shapes[1]._element).decode()
+            self.assertIn('<a:solidFill><a:srgbClr val="E8590C"/></a:solidFill>', filled)  # the filled circle
+            self.assertTrue(any(sh.shape_id == pic.shape_id and sh.shape_type == 13 for sh in slide.shapes))
 
 
 class NoRendererTests(unittest.TestCase):
@@ -471,6 +522,52 @@ class LineThroughTextTests(unittest.TestCase):
             report = json.loads((work / "wrong/report.json").read_text(encoding="utf-8"))
             self.assertEqual({c["name"]: c["status"] for c in report["checks"]}["render"], "failed")
 
+    def test_zoom_quarters_and_edit_summary_by_kind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            prs = Presentation()
+            prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+            for text in ("第一页", "第二页"):
+                prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_textbox(0, 0, Inches(4), Inches(1)).text = text
+            prs.save(work / "deck.pptx")
+            lines_pdf(work / "deck.pdf", pages=2)
+            cmd = [sys.executable, str(SCRIPTS / "preview.py"), "pptx", str(work / "deck.pptx"), "--edit-test",
+                   "--soffice", str(work / "no-such-soffice.exe"), "--pdf", str(work / "deck.pdf"), "--zoom",
+                   "--out", str(work / "review")]
+            result = subprocess.run(cmd, capture_output=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            out = result.stdout.decode("utf-8")
+            self.assertIn("2 targets (text 2); this deck has no native chart or table", out)
+            report = json.loads((work / "review/report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["edit_test"]["targets_by_kind"], {"text": 2})
+            quarters = sorted(p.name for p in (work / "review/zoom").glob("*.png"))
+            self.assertEqual(len(quarters), 8)
+            with Image.open(work / "review/zoom/slide-01-1.png") as quarter:
+                self.assertEqual(quarter.size, (1760, 990))                      # 0.55 of 2x 1600
+
+    def test_failed_export_is_reported_not_hidden(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            prs = Presentation()
+            prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_textbox(0, 0, Inches(4), Inches(1)).text = "标题"
+            prs.save(work / "deck.pptx")
+            real_export, real_argv = preview.export_pdf, sys.argv
+
+            def no_app(pptx, target, app):
+                raise RuntimeError(f"{app} is not installed")
+            preview.export_pdf = no_app
+            sys.argv = ["preview.py", "pptx", str(work / "deck.pptx"), "--export", "wps", "--out", str(work / "review")]
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    preview.main()
+            finally:
+                preview.export_pdf, sys.argv = real_export, real_argv
+            report = json.loads((work / "review/report.json").read_text(encoding="utf-8"))
+            checks = {c["name"]: c["status"] for c in report["checks"]}
+            self.assertEqual(checks["render"], "failed")
+            self.assertEqual(checks["layout"], "not_run")
+            self.assertIn("export with wps failed: wps is not installed", report["render_note"])
+
 
 qn_ea = "{http://schemas.openxmlformats.org/drawingml/2006/main}ea"
 qn_effect = "{http://schemas.openxmlformats.org/drawingml/2006/main}effectLst"
@@ -528,12 +625,82 @@ class PptxLayoutTests(unittest.TestCase):
             layout = []
             preview.pptx_to_pngs(src, Path(tmp) / "out", soffice_or_none(), 800, layout)
             kinds = {f["kind"] for f in layout[0]["findings"]}
-            for kind in ("text_overlap", "text_outside_slide", "orphan_last_line", "font_too_small", "placeholder"):
+            for kind in ("text_overlap", "text_outside_slide", "orphan_line", "font_too_small", "placeholder"):
                 self.assertIn(kind, kinds)
             self.assertEqual(layout[1]["findings"], [])
             self.assertEqual(layout[2]["findings"], [])
             self.assertEqual([(f["kind"], f["severity"], f["text"]) for f in layout[3]["findings"]],
                              [("line_through_text", "warning", "被线穿过的标签")])
+
+    def test_orphans_text_past_its_box_and_off_centre_frame(self):
+        def box(slide, x, y, w, h, text, size):
+            tb = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
+            tb.text_frame.word_wrap = True
+            for i, para in enumerate(text.split("\n")):
+                p = tb.text_frame.paragraphs[0] if i == 0 else tb.text_frame.add_paragraph()
+                run = p.add_run()
+                run.text, run.font.size = para, Pt(size)
+
+        def card(slide, x, y, w, h):
+            shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h))
+            shape.fill.solid()
+            shape.fill.fore_color.rgb = RGBColor(0xE8, 0xF1, 0xFA)
+            shape.line.fill.background()
+            shape.shadow.inherit = False                       # LibreOffice still paints the theme shadow ...
+            shape._element.remove(shape._element.find("{http://schemas.openxmlformats.org/presentationml/2006/main}style"))
+            return shape                                       # ... unless the style reference is gone
+        prs = Presentation()
+        prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+        orphans = prs.slides.add_slide(prs.slide_layouts[6])
+        box(orphans, 0.8, 1.0, 2.2, 2, "一二三四五六七八九十十；", 28)                # "十；": punctuation aside
+        box(orphans, 6.0, 1.0, 2.2, 3, "一二三四五六七八九十十\n下一段文字", 28)       # a lone line before a break
+        boxes = prs.slides.add_slide(prs.slide_layouts[6])
+        card(boxes, 0.8, 1.0, 4.0, 0.8)
+        box(boxes, 1.0, 1.1, 3.6, 0.6, "这段说明比底框长得多，会一直换行，最后从卡片底边跑出去，落在卡片外面。", 18)
+        card(boxes, 6.0, 1.0, 5.0, 1.6)
+        box(boxes, 6.2, 1.1, 4.6, 1.2, "这段说明完全落在卡片里面。", 18)
+        for i, label in enumerate(("第一格", "第二格", "第三格")):                    # stacked cells, one line each
+            card(boxes, 0.8, 3.5 + i * 0.4, 3.0, 0.4)
+            box(boxes, 0.9, 3.53 + i * 0.4, 2.8, 0.3, label, 16)
+        for n in range(3):                                                             # content shifted right
+            page = prs.slides.add_slide(prs.slide_layouts[6])
+            card(page, 1.1, 2.0, 11.7, 3.0)
+            box(page, 1.3, 2.2, 6, 0.6, f"第 {n + 1} 页正文", 20)
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "boxes.pptx"
+            prs.save(src)
+            layout = []
+            preview.pptx_to_pngs(src, Path(tmp) / "out", soffice_or_none(), 800, layout)
+        found = [f["kind"] for f in layout[0]["findings"]]
+        self.assertEqual(found, ["orphan_line", "orphan_line"])
+        self.assertEqual([f["kind"] for f in layout[1]["findings"]], ["text_outside_box"])
+        self.assertTrue(layout[1]["findings"][0]["text"].startswith("这段说明比底框长得多"))
+        frame = preview.deck_frame([(item["slide"], item["frame"]) for item in layout], "pt", 2, 12)
+        self.assertEqual(frame["slides"], [3, 4, 5])
+        self.assertAlmostEqual(frame["left"], 79.2, delta=1)
+        self.assertAlmostEqual(frame["right"], 38.4, delta=1)
+
+
+class FrameAndHintTests(unittest.TestCase):
+    def test_deck_frame_needs_a_shared_asymmetric_frame(self):
+        wide = lambda left, right: {"left": left, "right": right, "span": 960 - left - right, "width": 960}
+        shifted = [(n, wide(79, 38)) for n in range(2, 6)] + [(1, {"left": 480, "right": 25, "span": 455, "width": 960})]
+        self.assertEqual(preview.deck_frame(shifted, "pt", 2, 12)["slides"], [2, 3, 4, 5])
+        self.assertIsNone(preview.deck_frame([(n, wide(45, 45)) for n in range(1, 6)], "pt", 2, 12))  # symmetric
+        self.assertIsNone(preview.deck_frame([(1, wide(79, 38)), (2, wide(79, 38))], "pt", 2, 12))  # too few
+        self.assertIsNone(preview.deck_frame([(1, None), (2, None), (3, None)], "pt", 2, 12))
+
+    def test_text_heavy_slide_hint_only_in_visual_first(self):
+        leaves = [{"text": "社区活动" * 20, "rect": None, "groups": []}, {"text": "报名登记" * 20, "rect": None, "groups": []}]
+        kinds = [f["kind"] for f in preview.text_density(leaves, [], True)["findings"]]
+        self.assertIn("text_heavy_slide", kinds)
+        self.assertEqual(preview.text_density(leaves, [], False)["findings"], [])
+
+    def test_lone_character_ignores_punctuation_but_not_digits(self):
+        self.assertTrue(preview.lone_character("间；"))
+        self.assertTrue(preview.lone_character("在"))
+        self.assertFalse(preview.lone_character("8"))
+        self.assertFalse(preview.lone_character("经销商"))
 
 
 if __name__ == "__main__":

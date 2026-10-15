@@ -24,8 +24,9 @@
 agent 完成后，由测试人在同一台机器上运行（不使用 agent 自己的检查结果）：
 
 ```bash
-python <技能目录>/scripts/preview.py html output/index.html --out review/html --visual-first
-python <技能目录>/scripts/preview.py pptx output/deck.pptx --out review/pptx --edit-test --visual-first
+python <技能目录>/scripts/preview.py html output/index.html --out review/html --visual-first --zoom
+python <技能目录>/scripts/preview.py pptx output/deck.pptx --out review/pptx --edit-test --visual-first --zoom
+# Windows 上装了 WPS 时再加一次 --export wps，看目标软件里的换行
 ```
 
 从两个 `report.json` 中记录：
@@ -42,8 +43,8 @@ python <技能目录>/scripts/preview.py pptx output/deck.pptx --out review/pptx
 |---|---|
 | 信息保真 | brief.md 的“预期要点”逐条核对：是否夸大因果、合并预算状态、漏掉老人占比问题、缺少期间 |
 | 结构与叙事 | 标题连读能否讲清复盘结论与下一步 |
-| 阅读层级 | 每页焦点是否一眼可见，数据是否直接标注；有没有线条穿字、意外遮挡、闲置的大片空白、过小的实际字号或比例失真的数据图形 |
-| 图示执行 | 图示优先时：趋势、构成、因果条件等是否由图承担，而不是装进卡片的要点；图解是否补造了材料没有的关系。图文均可变体：是否按内容选择，没有被强制图示化 |
+| 阅读层级 | 每页焦点是否一眼可见，数据是否直接标注；内容区左右是否对齐；有没有孤字、文字跑出卡片、线条穿字、意外遮挡、闲置的大片空白、过小的实际字号或比例失真的数据图形 |
+| 图示执行 | 图示优先时：是否用图片、图标、示意插画代替了文字，页面是否只留结论、关键数字和短标签；图标是否贴切、风格统一；图里是否少字；有没有为凑图示另造关系图、同一句话多页重复、页面上写给审核者的说明。图文均可变体：是否按内容选择，没有被强制图示化 |
 | 视觉与记忆点 | 是否有清楚的视觉概念；有没有值得截图的页；是否命中 anti-patterns 中的典型问题 |
 | 双格式一致 | HTML 与 PPTX 的内容、数据和条件是否一致 |
 | 如实报告 | agent 对“是否看过图、哪些没做”的自述是否与实际一致 |

@@ -3,14 +3,18 @@
 
   preview.py html  deck.html  --out DIR   per-slide PNGs (fully revealed), console/network/offline checks,
                                           keyboard test, small-viewport shot, print PDF, contact sheets
-  preview.py pptx  deck.pptx  --out DIR   LibreOffice -> PDF -> PNGs (or --pdf FILE exported from the deck by
-                                          WPS/PowerPoint), layout check, native object inventory, fonts,
-                                          optional --edit-test on a copy, contact sheets
+  preview.py pptx  deck.pptx  --out DIR   LibreOffice -> PDF -> PNGs (or --export wps|powerpoint to have that
+                                          app export the PDF, or --pdf FILE exported from the deck), layout
+                                          check, native object inventory, fonts, optional --edit-test on a
+                                          copy, contact sheets
   preview.py sheet PNGS|DIR   --out FILE  contact sheet plus -gray and -blur variants
   preview.py compare A B ...  --out FILE  images side by side for comparing directions
 
-html and pptx also report body text per slide; with --visual-first they point at long paragraphs and
-boxes of points that might become a chart or diagram (hints, not a pass/fail check).
+html and pptx also report body text per slide; with --visual-first they point at long paragraphs, boxes
+of points and text-heavy slides to shorten, move to notes or carry with icons and pictures (hints, not a
+pass/fail check). --zoom also writes four enlarged quarters of every slide for a second, closer look.
+The layout check flags text past its box, one-character lines and a content frame that sits off-centre on
+most slides (warnings to confirm by looking).
 
 Dependencies: Pillow; html needs playwright (bundled Chromium or installed Chrome/Edge);
 pptx needs PyMuPDF and LibreOffice (or --pdf), and python-pptx for the inventory and --edit-test.
@@ -200,7 +204,8 @@ LAYOUT_JS = r"""(index) => {
     if (found) add('text_overlap', 'error', a.el, found, `Overlaps “${label(b.el)}”.`);
   }
 
-  // 4. orphan last line: a multi-line block whose last line holds about one character
+  // 4. orphan line: a wrapped line holding about one character (a trailing CJK punctuation mark aside),
+  // whether it ends the block or sits before a forced break
   const blocks = new Set(texts.map(t => t.el instanceof SVGElement ? null :
     t.el.closest('p, li, h1, h2, h3, h4, h5, h6, td, th, dd, blockquote, figcaption, div')).filter(Boolean));
   for (const el of blocks) {
@@ -215,10 +220,15 @@ LAYOUT_JS = r"""(index) => {
       else lines.push({c, l: r.left, r: r.right, t: r.top, b: r.bottom}); }
     if (lines.length < 2) continue;
     lines.sort((a, b) => a.c - b.c);
-    const last = lines[lines.length - 1];
-    if (last.r - last.l <= fs * 1.6)
-      add('orphan_last_line', 'warning', el, new DOMRect(last.l, last.t, last.r - last.l, last.b - last.t),
-          'Last line holds about one character; rewrite, widen or break the line deliberately.');
+    const endsInMark = /[。，、；：！？）」』”’》】]\s*$/.test(el.textContent || '');
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i], w = line.r - line.l;
+      const last = i === lines.length - 1;
+      if (w <= fs * 1.6 || (last && endsInMark && w <= fs * 2.2)) {
+        add('orphan_line', 'warning', el, new DOMRect(line.l, line.t, w, line.b - line.t),
+            'A line holds about one character; rewrite, widen or break the line deliberately.');
+        break; }
+    }
   }
 
   // 6. contrast against whatever is painted behind the text
@@ -316,6 +326,73 @@ TEXT_JS = r"""(index) => {
 CJK_CHAR = re.compile(r"[㐀-鿿豈-﫿぀-ヿ가-힯]")
 LATIN_WORD = re.compile(r"[A-Za-z0-9]+(?:[.,'’%-][A-Za-z0-9]+)*")
 LONG_TEXT = 60  # 字 in one paragraph or one box of points; a Latin word or number counts as two
+PAGE_TEXT = 150  # 字 of body text on one slide
+
+
+# Left and right edges of the content between the header band (top 11.5%) and the footer band (bottom 8%):
+# text, pictures, SVG and boxes with a fill or border, leaving out full-width bands. Canvas px.
+FRAME_JS = r"""(index) => {
+  const slide = document.querySelectorAll('#ssr-deck > .ssr-slide')[index];
+  const sr = slide.getBoundingClientRect();
+  const k = sr.width / (slide.offsetWidth || sr.width) || 1;
+  const shown = el => { for (let e = el; e && e !== slide; e = e.parentElement) { const cs = getComputedStyle(e);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05) return false; } return true; };
+  let l = Infinity, r = -Infinity;
+  const take = rect => {
+    if (rect.width < 1 || rect.height < 1 || rect.width > sr.width * 0.95) return;
+    if (rect.top - sr.top < sr.height * 0.115 || rect.bottom - sr.top > sr.height * 0.92) return;
+    l = Math.min(l, rect.left - sr.left); r = Math.max(r, rect.right - sr.left); };
+  for (const el of slide.querySelectorAll('*')) {
+    if (el.closest('.ssr-notes, .ssr-ui, script, style, [data-lint-ignore], [data-bleed]') || !shown(el)) continue;
+    if (/^(img|svg|canvas|video)$/i.test(el.tagName)) { take(el.getBoundingClientRect()); continue; }
+    if (el.closest('svg')) continue;
+    const cs = getComputedStyle(el);
+    const bg = /rgba?\(([^)]+)\)/.exec(cs.backgroundColor);
+    const alpha = bg ? Number(bg[1].split(/[ ,/]+/)[3] ?? 1) : 0;
+    if (alpha > 0.05 || parseFloat(cs.borderTopWidth) > 0 || parseFloat(cs.borderLeftWidth) > 0 ||
+        (cs.backgroundImage && cs.backgroundImage !== 'none')) take(el.getBoundingClientRect());
+    for (const n of el.childNodes) if (n.nodeType === 3 && n.textContent.trim()) {
+      const range = document.createRange(); range.selectNodeContents(n);
+      for (const rect of range.getClientRects()) take(rect); }
+  }
+  if (!isFinite(l)) return null;
+  return {left: l / k, right: (sr.width - r) / k, span: (r - l) / k, width: sr.width / k};
+}"""
+
+
+def deck_frame(frames, unit, tolerance, threshold):
+    """One warning when most slides share a content frame whose left and right margins differ by more than
+    threshold. frames: [(slide, {left, right, span, width}) or None]. Slides whose content spans less than
+    60% of the width (covers, half-page pictures) are left out. Asymmetric frames can be deliberate."""
+    wide = [(n, f) for n, f in frames if f and f["span"] > 0.6 * f["width"]]
+    best, members = None, []
+    for n, f in wide:
+        group = [m for m, g in wide if abs(g["left"] - f["left"]) <= tolerance and abs(g["right"] - f["right"]) <= tolerance]
+        if len(group) > len(members):
+            best, members = f, group
+    if not best or len(members) < 3 or abs(best["left"] - best["right"]) <= threshold:
+        return None
+    pages = ", ".join(str(m) for m in members)
+    return {"kind": "content_frame_off_centre", "severity": "warning", "slides": members,
+            "left": round(best["left"], 1), "right": round(best["right"], 1), "unit": unit,
+            "detail": f"Slides {pages} share a content frame with left margin {best['left']:.0f}{unit} and right "
+                      f"margin {best['right']:.0f}{unit}. Unless the asymmetry is deliberate, take the content area "
+                      "from the template or align both edges to the header (title, logo)."}
+
+
+def zoom_quarters(image, out_dir, stem):
+    """Four overlapping quarters of a slide image (top-left, top-right, bottom-left, bottom-right)."""
+    Image = need("PIL.Image", "python -m pip install pillow")
+    im = Image.open(image)
+    w, h = im.size
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for i, (x0, y0) in enumerate(((0, 0), (0.45, 0), (0, 0.45), (0.45, 0.45)), 1):
+        box = (round(x0 * w), round(y0 * h), round((x0 + 0.55) * w), round((y0 + 0.55) * h))
+        path = out_dir / f"{stem}-{i}.png"
+        im.crop(box).save(path)
+        paths.append(path)
+    return paths
 
 
 def text_units(text):
@@ -325,8 +402,9 @@ def text_units(text):
 
 def text_density(leaves, groups, visual_first):
     """Summarise one slide's body text. leaves: [{text, rect, groups}] where groups lists the enclosing
-    blocks (innermost first); groups: [rect]. With visual_first, long paragraphs and text-heavy boxes become
-    hints. They point at text that might become a chart or diagram; they are not a pass/fail check."""
+    blocks (innermost first); groups: [rect]. With visual_first, long paragraphs, text-heavy boxes and
+    text-heavy slides become hints: shorten, move the explanation to the notes, or let an icon, picture or
+    chart carry it. They are not a pass/fail check."""
     for leaf in leaves:
         leaf["units"] = text_units(leaf["text"])
     findings, flagged = [], set()
@@ -335,8 +413,9 @@ def text_density(leaves, groups, visual_first):
             flagged.add(i)
             findings.append({"kind": "long_paragraph", "severity": "hint", "text": leaf["text"][:40],
                              "rect": leaf["rect"], "units": leaf["units"],
-                             "detail": f"About {leaf['units']} 字 in one paragraph. Can a chart or diagram carry it? "
-                                       "Keep conditions; if text is the right form, say why in planning.md."})
+                             "detail": f"About {leaf['units']} 字 in one paragraph. Shorten it, move the explanation "
+                                       "to the notes, or let an icon or picture carry part of it; keep conditions "
+                                       "that change the conclusion."})
     members = {}
     for i, leaf in enumerate(leaves):
         for g in leaf.get("groups", []):
@@ -348,17 +427,23 @@ def text_density(leaves, groups, visual_first):
             flagged.update(idx)
             findings.append({"kind": "long_text_block", "severity": "hint", "text": leaves[idx[0]]["text"][:40],
                              "rect": groups[g], "units": units,
-                             "detail": f"About {units} 字 of points in one box. Boxed text is not yet a diagram: "
-                                       "can position, links or scale carry it? Keep conditions, or say why in planning.md."})
-    return {"units": sum(l["units"] for l in leaves),
-            "longest_paragraph": max((l["units"] for l in leaves), default=0), "findings": findings}
+                             "detail": f"About {units} 字 of points in one box. Cut repeats, move detail to the "
+                                       "notes, or give each point an icon and a short label; keep conditions."})
+    total = sum(l["units"] for l in leaves)
+    if visual_first and total > PAGE_TEXT:
+        findings.append({"kind": "text_heavy_slide", "severity": "hint", "text": "(whole slide)", "rect": None,
+                         "units": total,
+                         "detail": f"About {total} 字 of body text. Keep the conclusion, key numbers and short "
+                                   "labels on the slide; move explanations to the notes and drop repeats."})
+    return {"units": total, "longest_paragraph": max((l["units"] for l in leaves), default=0), "findings": findings}
 
 
 def print_text(text):
     print("text (字 per slide, body only): " + "  ".join(f"{s['slide']:02d}:{s['units']}" for s in text["slides"]))
     if text["visual_first"]:
         hints = [(s["slide"], f) for s in text["slides"] for f in s["findings"]]
-        print(f"visual-first hints: {len(hints)} (pointers to recheck, not a pass/fail check)")
+        print(f"visual-first hints: {len(hints)} (handle each one: cut, move to notes, or picture/icon; "
+              "not a pass/fail check)")
         for n, f in hints:
             print(f"  slide {n:02d} hint    {f['kind']:<18} “{f['text']}” {f['detail']}")
 
@@ -495,6 +580,7 @@ def cmd_html(args):
         page.add_style_tag(content=CAPTURE_CSS)
         report["layout"] = []
         report["text"] = {"visual_first": args.visual_first, "slides": []}
+        frames = []
         for i in range(n):
             if info["api"]:
                 page.evaluate("i => SSRPlayer.go(i, { reveal: 'all' })", i)
@@ -505,6 +591,7 @@ def cmd_html(args):
             page.wait_for_timeout(60)
             page.locator("#ssr-deck").screenshot(path=str(slides_dir / f"slide-{i + 1:02d}.png"))
             report["layout"].append({"slide": i + 1, "findings": page.evaluate(LAYOUT_JS, i)})
+            frames.append((i + 1, page.evaluate(FRAME_JS, i)))
             body = page.evaluate(TEXT_JS, i)
             leaves = [{"text": l["text"], "rect": l["rect"], "groups": [l["group"]] if l["group"] >= 0 else []}
                       for l in body["leaves"]]
@@ -527,6 +614,12 @@ def cmd_html(args):
 
     shots = sorted(slides_dir.glob("slide-*.png"))
     make_sheet(shots, out / "sheet.png")
+    zoom_dir = out / "zoom"
+    if zoom_dir.exists():
+        shutil.rmtree(zoom_dir)
+    if args.zoom:
+        for shot in shots:
+            zoom_quarters(shot, zoom_dir, shot.stem)
     layout_dir = out / "layout"
     if layout_dir.exists():
         shutil.rmtree(layout_dir)
@@ -534,8 +627,11 @@ def cmd_html(args):
         if item["findings"]:
             draw_layout(slides_dir / f"slide-{item['slide']:02d}.png", item["findings"],
                         layout_dir / f"slide-{item['slide']:02d}.png", args.scale)
+    frame = deck_frame(frames, "px", tolerance=3, threshold=16)
+    report["frames"] = [{"slide": s, **f} if f else {"slide": s} for s, f in frames]
+    report["deck_layout"] = [frame] if frame else []
     errors = sum(f["severity"] == "error" for item in report["layout"] for f in item["findings"])
-    warnings = sum(f["severity"] == "warning" for item in report["layout"] for f in item["findings"])
+    warnings = sum(f["severity"] == "warning" for item in report["layout"] for f in item["findings"]) + len(report["deck_layout"])
     problems = report["console"] + report["page_errors"] + report["failed_requests"]
     print(f"browser: {report['browser']}  slides: {n}  canvas: {W}x{H}  fonts: {report['fonts_status']}")
     print(f"slides -> {slides_dir}")
@@ -551,6 +647,10 @@ def cmd_html(args):
     for item in report["layout"]:
         for f in item["findings"]:
             print(f"  slide {item['slide']:02d} {f['severity']:<7} {f['kind']:<18} “{f['text']}” {f['detail']}")
+    for f in report["deck_layout"]:
+        print(f"  deck     {f['severity']:<7} {f['kind']:<18} {f['detail']}")
+    if args.zoom:
+        print(f"zoom   -> {zoom_dir} (four enlarged quarters per slide: look again at text, breaks and edges)")
     print_text(report["text"])
 
     report["checks"] = [
@@ -566,7 +666,8 @@ def cmd_html(args):
               "SSRPlayer keyboard checks; use task-specific checks for a different player."),
         check("layout", "failed" if errors else "passed",
               f"{errors} errors (outside slide, clipped, overlapping text), {warnings} warnings (orphan line, "
-              "small font, contrast, placeholder). Geometry only: composition, meaning and crops still need review.",
+              "small font, contrast, placeholder, off-centre content frame). Geometry only: composition, meaning "
+              "and crops still need review.",
               errors=errors, warnings=warnings),
     ]
     pr = report.get("print", {})
@@ -698,13 +799,116 @@ def lines_through_text(page, flags):
     return hits
 
 
-def pdf_layout(page, pm):
-    """Text geometry on a rendered PPTX page, in points: text off the page, text over other text,
-    a last line of about one character, tiny text, placeholders and drawn lines through text.
-    Backgrounds are not known, so no contrast."""
+def lone_character(text):
+    """A line holding one Chinese/Japanese/Korean character, punctuation aside: "间；", "性。", "在".
+    A lone digit or letter is usually a label of its own (a big number, an axis tick), so it does not count."""
+    core = [c for c in text if c.isalnum()]
+    return len(core) == 1 and bool(CJK_CHAR.match(core[0]))
+
+
+def boxes(drawings, width, height):
+    """Filled or outlined shapes big enough to hold text (cards, panels, bands), as rects in points."""
+    out = []
+    for d in drawings:
+        r = d["rect"]
+        if r.width < 24 or r.height < 14 or r.width * r.height > 0.5 * width * height:
+            continue
+        filled = d.get("fill") is not None and d.get("type") in ("f", "fs")
+        stroked = d.get("color") is not None and d.get("type") in ("s", "fs")
+        if filled or stroked:
+            out.append(r)
+    return out
+
+
+def text_groups(page, flags, containers=()):
+    """Paragraph-like groups of rendered text. PDF text extraction joins everything on one baseline, even
+    labels in separate boxes, so lines are first cut where the gap between characters exceeds 1.5 em; the
+    pieces are then stacked into one group when they share a left, right or centre edge, have about the
+    same size, sit less than 0.9 em apart and keep the group's line pitch (stacked labels in separate boxes
+    usually do not). A line that sits in a box the line above is not in (the next table cell or card)
+    starts a new group. Each group: {"lines": [(text, bbox)], "bbox", "size"}."""
+
+    def holds(r, b):
+        return r.x0 - 1 <= b[0] and r.y0 - 1 <= b[1] and r.x1 + 1 >= b[2] and r.y1 + 1 >= b[3]
+    pieces = []
+    for block in page.get_text("rawdict", flags=flags)["blocks"]:
+        if block.get("type") != 0:
+            continue
+        for line in block["lines"]:
+            if line.get("dir", (1, 0))[1] != 0:
+                continue  # rotated or vertical text
+            chars = sorted(((c, s["size"]) for s in line["spans"] for c in s["chars"]), key=lambda t: t[0]["bbox"][0])
+            current, last = [], None
+            for c, size in chars:
+                if c["c"].strip() and last is not None and c["bbox"][0] - last["bbox"][2] > 1.5 * size:
+                    pieces.append((current, size))
+                    current = []
+                current.append(c)
+                if c["c"].strip():
+                    last = c
+            if current:
+                pieces.append((current, max(s["size"] for s in line["spans"])))
+    segments = []
+    for chars, size in pieces:
+        ink = [c for c in chars if c["c"].strip()]
+        if not ink:
+            continue
+        text = "".join(c["c"] for c in chars).strip()
+        bbox = (min(c["bbox"][0] for c in ink), min(c["bbox"][1] for c in ink),
+                max(c["bbox"][2] for c in ink), max(c["bbox"][3] for c in ink))
+        segments.append({"text": text, "bbox": bbox, "size": size})
+    segments.sort(key=lambda s: (s["bbox"][1], s["bbox"][0]))
+    groups = []
+    for seg in segments:
+        x0, y0, x1, y1 = seg["bbox"]
+        size = seg["size"]
+        home = None
+        for g in groups:
+            lx0, ly0, lx1, ly1 = g["lines"][-1][1]
+            tol = max(2.0, 0.3 * size)
+            aligned = abs(lx0 - x0) <= tol or abs(lx1 - x1) <= tol or abs((lx0 + lx1) - (x0 + x1)) / 2 <= tol
+            pitch = y0 - ly0
+            steady = len(g["lines"]) < 2 or abs(pitch - (ly0 - g["lines"][-2][1][1])) <= 0.25 * pitch
+            if (aligned and steady and abs(g["size"] - size) <= 0.15 * size and pitch > 0.5 * size
+                    and y0 - ly1 <= 0.9 * size
+                    and not any(holds(r, seg["bbox"]) and not holds(r, (lx0, ly0, lx1, ly1)) for r in containers)):
+                home = g
+                break
+        if home is None:
+            groups.append({"lines": [(seg["text"], seg["bbox"])], "size": size, "bbox": list(seg["bbox"])})
+        else:
+            home["lines"].append((seg["text"], seg["bbox"]))
+            b = home["bbox"]
+            home["bbox"] = [min(b[0], x0), min(b[1], y0), max(b[2], x1), max(b[3], y1)]
+    return groups
+
+
+def page_frame(page, blocks, drawings):
+    """Left and right margins of the content between the header band (top 11.5%) and the footer band
+    (bottom 8%), leaving out full-width bands; None when nothing is there."""
+    width, height = page.rect.width, page.rect.height
+    rects = [d["rect"] for d in drawings]
+    rects += [s["bbox"] for b in blocks for line in b["lines"] for s in line["spans"] if s["text"].strip()]
+    rects += [info["bbox"] for info in page.get_image_info()]
+    xs = [(r[0], r[2]) for r in rects
+          if r[2] - r[0] < width * 0.95 and r[1] >= height * 0.115 and r[3] <= height * 0.92
+          and (r[2] - r[0] >= 0.5 or r[3] - r[1] >= 0.5)]
+    if not xs:
+        return None
+    left, right = min(x0 for x0, _ in xs), max(x1 for _, x1 in xs)
+    return {"left": round(left, 1), "right": round(width - right, 1), "span": round(right - left, 1), "width": width}
+
+
+def pdf_layout(page, pm, frame=None):
+    """Text geometry on a rendered PPTX page, in points: text off the page, text over other text, a line of
+    about one character, text running out of its card or panel, tiny text, placeholders and drawn lines
+    through text. Backgrounds are not known, so no contrast. frame: a dict that receives the page's
+    content margins (see page_frame)."""
     flags = getattr(pm, "TEXTFLAGS_DICT", 0) & ~getattr(pm, "TEXT_MEDIABOX_CLIP", 64)  # keep text past the edge
     width, height = page.rect.width, page.rect.height
     findings, spans = [], []
+    drawings = page.get_drawings()
+    containers = boxes(drawings, width, height)
 
     def add(kind, severity, text, bbox, detail):
         x0, y0, x1, y1 = bbox
@@ -712,9 +916,10 @@ def pdf_layout(page, pm):
                          "rect": {"x": round(x0), "y": round(y0), "w": round(x1 - x0), "h": round(y1 - y0)},
                          "detail": detail})
 
-    for bi, block in enumerate(page.get_text("dict", flags=flags)["blocks"]):
-        if block.get("type") != 0:
-            continue
+    blocks = [b for b in page.get_text("dict", flags=flags)["blocks"] if b.get("type") == 0]
+    if frame is not None:
+        frame.update(page_frame(page, blocks, drawings) or {})
+    for bi, block in enumerate(blocks):
         lines = []
         for li, line in enumerate(block["lines"]):
             text = "".join(s["text"] for s in line["spans"])
@@ -723,19 +928,34 @@ def pdf_layout(page, pm):
             for s in line["spans"]:
                 if s["text"].strip():
                     spans.append((bi, li, s))
+        if not lines:
+            continue
         block_text = " ".join(t for t, _ in lines)
-        bx0, by0, bx1, by1 = block["bbox"]
-        off_page = bx0 < -1 or by0 < -1 or bx1 > width + 1 or by1 > height + 1  # reported below as an error
-        # A wrapped last line sits below every other line; table cells in one row share a line position.
-        wrapped = len(lines) >= 2 and (lines[-1][1][1] + lines[-1][1][3]) / 2 > max(b[3] for _, b in lines[:-1])
-        if wrapped and len(lines[-1][0]) == 1 and not off_page:
-            add("orphan_last_line", "warning", block_text, lines[-1][1],
-                "Last line holds one character; rewrite, widen the box or break the line deliberately.")
         if PLACEHOLDER.search(block_text):
             add("placeholder", "warning", block_text, block["bbox"], "Looks like placeholder text.")
         tiny = min((s["size"] for line in block["lines"] for s in line["spans"] if s["text"].strip()), default=99)
         if tiny < 9:
             add("font_too_small", "warning", block_text, block["bbox"], f"{tiny:.1f}pt (< 9pt, about 12px).")
+
+    for g in text_groups(page, flags, containers):
+        gx0, gy0, gx1, gy1 = g["bbox"]
+        if gx0 < -1 or gy0 < -1 or gx1 > width + 1 or gy1 > height + 1:
+            continue  # reported below as an error
+        group_text = " ".join(t for t, _ in g["lines"])
+        # A line of one character inside a paragraph: a wrapped tail or the word before a forced break.
+        for text, bbox in g["lines"][1:]:
+            if lone_character(text):
+                add("orphan_line", "warning", group_text, bbox,
+                    "A line holds one character; rewrite, widen the box or break the line deliberately.")
+                break
+        # Text that starts inside a card or panel and runs past its edge: no box around the first line holds
+        # the whole paragraph (a heading bar inside a larger card is fine).
+        first = g["lines"][0][1]
+        inside = [r for r in containers if r.x0 - 1 <= first[0] and r.y0 - 1 <= first[1]
+                  and r.x1 + 1 >= first[2] and r.y1 + 1 >= first[3]]
+        if inside and not any(gy1 <= r.y1 + 2 and gx1 <= r.x1 + 2 and gx0 >= r.x0 - 2 for r in inside):
+            add("text_outside_box", "warning", group_text, g["bbox"],
+                "Text starts inside a card or panel and runs past its edge; shorten the text or enlarge the box.")
 
     for bi, li, s in spans:
         x0, y0, x1, y1 = s["bbox"]
@@ -772,8 +992,9 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def pdf_to_pngs(pdf, out_dir, width, layout=None):
-    """One PNG per PDF page; with layout, also the layout findings of each page."""
+def pdf_to_pngs(pdf, out_dir, width, layout=None, zoom_dir=None):
+    """One PNG per PDF page; with layout, also the layout findings and content margins of each page;
+    with zoom_dir, four quarters of each page rendered at twice the width."""
     pm = pymupdf_or_none() or sys.exit("missing dependency PyMuPDF: python -m pip install pymupdf")
     out_dir.mkdir(parents=True, exist_ok=True)
     doc = pm.open(pdf)
@@ -786,13 +1007,20 @@ def pdf_to_pngs(pdf, out_dir, width, layout=None):
             pix.save(path)
             paths.append(path)
             if layout is not None:
-                layout.append({"slide": i + 1, "scale": zoom, "findings": pdf_layout(page, pm)})
+                frame = {}
+                layout.append({"slide": i + 1, "scale": zoom, "findings": pdf_layout(page, pm, frame),
+                               "frame": frame or None})
+            if zoom_dir is not None:
+                with tempfile.TemporaryDirectory() as tmp:
+                    big = Path(tmp, "page.png")
+                    page.get_pixmap(matrix=pm.Matrix(2 * zoom, 2 * zoom)).save(big)
+                    zoom_quarters(big, zoom_dir, path.stem)
     finally:
         doc.close()
     return paths
 
 
-def pptx_to_pngs(pptx, out_dir, soffice, width, layout=None):
+def pptx_to_pngs(pptx, out_dir, soffice, width, layout=None, zoom_dir=None):
     pymupdf_or_none() or sys.exit("missing dependency PyMuPDF: python -m pip install pymupdf")
     with tempfile.TemporaryDirectory() as tmp:
         profile = Path(tmp, "profile").resolve().as_uri()
@@ -802,7 +1030,64 @@ def pptx_to_pngs(pptx, out_dir, soffice, width, layout=None):
         pdf = Path(tmp, Path(pptx).stem + ".pdf")
         if not pdf.exists():
             raise RuntimeError(f"LibreOffice did not produce a PDF for {pptx}")
-        return pdf_to_pngs(pdf, out_dir, width, layout)
+        return pdf_to_pngs(pdf, out_dir, width, layout, zoom_dir)
+
+
+# Opens the deck read-only and windowless in WPS or PowerPoint through COM and saves a PDF
+# (ppSaveAsPDF = 32), then closes only that presentation. The app is quit only when no WPS or PowerPoint
+# process was running beforehand (WPS keeps all its documents in one process), so the user's open files are
+# never touched. If the ProgID does not resolve in this registry view, the CLSID it names is tried.
+EXPORT_PS1 = r"""param([string]$ProgId, [string]$Source, [string]$Target)
+$ErrorActionPreference = 'Stop'
+$running = @(Get-Process -Name wps, wpp, et, wpspdf, POWERPNT -ErrorAction SilentlyContinue).Count -gt 0
+try { $app = New-Object -ComObject $ProgId }
+catch {
+  $clsid = (Get-ItemProperty "Registry::HKEY_CLASSES_ROOT\$ProgId\CLSID" -ErrorAction SilentlyContinue).'(default)'
+  if (-not $clsid) { $clsid = (Get-ItemProperty "Registry::HKEY_CURRENT_USER\Software\Classes\$ProgId\CLSID" -ErrorAction SilentlyContinue).'(default)' }
+  if (-not $clsid) { throw }
+  $app = [Activator]::CreateInstance([Type]::GetTypeFromCLSID($clsid))
+}
+$pres = $null
+try {
+  $pres = $app.Presentations.Open($Source, -1, 0, 0)
+  $pres.SaveAs($Target, 32)
+} finally {
+  if ($pres -ne $null) { $pres.Close() }
+  if (-not $running) { try { $app.Quit() } catch {} }
+  [System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
+}
+"""
+EXPORT_APPS = {"wps": "KWPP.Application", "powerpoint": "PowerPoint.Application"}
+
+
+def export_pdf(pptx, target, app):
+    """Have WPS or PowerPoint (Windows, through COM) export the deck to target. Tries 64-bit and then
+    32-bit PowerShell, since WPS often registers only a 32-bit COM server. Returns the PDF path."""
+    if os.name != "nt":
+        raise RuntimeError("--export needs Windows with WPS or PowerPoint installed; export the PDF yourself and use --pdf")
+    windir = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    shells = [p for p in (windir / "System32/WindowsPowerShell/v1.0/powershell.exe",
+                          windir / "SysWOW64/WindowsPowerShell/v1.0/powershell.exe") if p.exists()]
+    if not shells and shutil.which("powershell"):
+        shells = [Path(shutil.which("powershell"))]
+    if not shells:
+        raise RuntimeError("Windows PowerShell not found")
+    target = Path(target).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+    errors = []
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp, "export.ps1")
+        script.write_text(EXPORT_PS1, encoding="utf-8-sig")
+        for shell in shells:
+            proc = subprocess.run([str(shell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                                   str(script), "-ProgId", EXPORT_APPS[app], "-Source", str(Path(pptx).resolve()),
+                                   "-Target", str(target)], capture_output=True, text=True, timeout=300)
+            if proc.returncode == 0 and target.exists():
+                return target
+            errors.append(f"{shell.parent.parent.parent.name}: {(proc.stderr or proc.stdout).strip()[:300]}")
+    raise RuntimeError(f"{app} could not export the PDF ({'; '.join(errors)})")
 
 
 NS = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
@@ -1179,24 +1464,42 @@ def cmd_pptx(args):
     soffice = find_soffice(args.soffice)
     has_pm = pymupdf_or_none() is not None
     pdf = Path(args.pdf).resolve() if args.pdf else None
-    can_render = has_pm and bool(pdf or soffice)
     layout, pngs, render_note, render_failed = [], [], None, False
-    if not can_render:
+    export_failed = False
+    if args.export:
+        # The target app itself writes the PDF from the final file: its line breaks and fonts are the ones
+        # the audience will see, unlike LibreOffice's approximation.
+        try:
+            pdf = export_pdf(src, out / f"export-{args.export}.pdf", args.export)
+            print(f"exported with {args.export}: {pdf}")
+        except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+            export_failed = True
+            render_note = f"export with {args.export} failed: {error}"
+            print("warning: " + render_note, file=sys.stderr)
+    zoom_dir = out / "zoom"
+    if zoom_dir.exists():
+        shutil.rmtree(zoom_dir)
+    can_render = has_pm and bool(pdf or soffice) and not export_failed
+    if not can_render and not export_failed:
         render_note = ("PyMuPDF not installed" if not has_pm else "LibreOffice not found") + \
             "; rendering and the layout check were not run (inventory, fonts and edit test still run)." + \
-            ("" if not has_pm else " Pass --pdf with a PDF exported from this PPTX to run them.")
+            ("" if not has_pm else " Use --export wps|powerpoint, or --pdf with a PDF exported from this PPTX.")
         print("warning: " + render_note, file=sys.stderr)
-    else:
+    elif can_render:
         try:
-            pngs = (pdf_to_pngs(pdf, slides_dir, args.width, layout) if pdf else
-                    pptx_to_pngs(src, slides_dir, soffice, args.width, layout))
+            zd = zoom_dir if args.zoom else None
+            pngs = (pdf_to_pngs(pdf, slides_dir, args.width, layout, zd) if pdf else
+                    pptx_to_pngs(src, slides_dir, soffice, args.width, layout, zd))
         except (OSError, subprocess.SubprocessError, RuntimeError) as error:
             render_note, render_failed, layout = f"rendering failed: {error}", True, []
             print("warning: " + render_note, file=sys.stderr)
-    renderer = f"supplied PDF {pdf.name}" if pdf else "LibreOffice (approximation of PowerPoint)"
+    renderer = (f"{args.export} export ({EXPORT_APPS[args.export]})" if args.export and pdf else
+                f"supplied PDF {pdf.name}" if pdf else "LibreOffice (approximation of PowerPoint)")
     report = {"file": str(src), "renderer": renderer if pngs else None,
               "render_note": render_note, "slides": len(pngs), "fonts": font_inventory(src),
               "inventory": inventory(src), "layout": layout, "text": pptx_text(src, args.visual_first)}
+    frame = deck_frame([(item["slide"], item.get("frame")) for item in layout], "pt", tolerance=2, threshold=12)
+    report["deck_layout"] = [frame] if frame else []
     if pdf:
         # The checks only cover the version that was exported: record both files so they can be matched.
         stale = pdf.stat().st_mtime < src.stat().st_mtime
@@ -1215,7 +1518,7 @@ def cmd_pptx(args):
             draw_layout(slides_dir / f"slide-{item['slide']:02d}.png", item["findings"],
                         layout_dir / f"slide-{item['slide']:02d}.png", item["scale"])
     layout_errors = sum(f["severity"] == "error" for item in layout for f in item["findings"])
-    layout_warnings = sum(f["severity"] == "warning" for item in layout for f in item["findings"])
+    layout_warnings = sum(f["severity"] == "warning" for item in layout for f in item["findings"]) + len(report["deck_layout"])
     if args.edit_test:
         if report["inventory"] is None:
             report["edit_test"] = "skipped: python-pptx not installed"
@@ -1235,7 +1538,19 @@ def cmd_pptx(args):
     if "edit_test" in report:
         edit = report["edit_test"]
         if isinstance(edit, dict):
-            print(f"edit test: {checks_status(edit['checks'])}, {len(edit['checks'])} targets; details in report.json")
+            # Name what was actually tested, so a record cannot claim object types the deck does not have.
+            kinds = {}
+            for c in edit["checks"]:
+                kind = (c.get("target") or {}).get("kind", "?")
+                kinds[kind] = kinds.get(kind, 0) + 1
+            inv = report["inventory"] or []
+            absent = [name for name, key in (("chart", "charts"), ("table", "tables"))
+                      if not any(s[key] for s in inv)]
+            edit["targets_by_kind"] = kinds
+            print(f"edit test: {checks_status(edit['checks'])}, {len(edit['checks'])} targets ("
+                  + ", ".join(f"{k} {n}" for k, n in kinds.items()) + ")"
+                  + (f"; this deck has no native {' or '.join(absent)}" if absent else "")
+                  + "; details in report.json")
         else:
             print(f"edit test: {edit}")
     if pngs:
@@ -1246,11 +1561,17 @@ def cmd_pptx(args):
     for item in layout:
         for f in item["findings"]:
             print(f"  slide {item['slide']:02d} {f['severity']:<7} {f['kind']:<18} “{f['text']}” {f['detail']}")
+    for f in report["deck_layout"]:
+        print(f"  deck     {f['severity']:<7} {f['kind']:<18} {f['detail']}")
+    if args.zoom and pngs:
+        print(f"zoom   -> {zoom_dir} (four enlarged quarters per slide: look again at text, breaks and edges)")
     if report["text"]:
         print_text(report["text"])
 
     expected_pages = len(report["inventory"]) if report["inventory"] is not None else None
-    if not can_render:
+    if export_failed:
+        render_status = "failed"
+    elif not can_render:
         render_status = "not_run"
     elif render_failed:
         render_status = "failed"
@@ -1264,8 +1585,10 @@ def cmd_pptx(args):
         report["checks"].append(check(
             "layout", "failed" if layout_errors else "passed",
             f"{layout_errors} errors (outside slide, overlapping text), {layout_warnings} warnings "
-            "(orphan line, small font, placeholder, line through text). "
-            + ("Measured on the supplied PDF; it covers only the version that was exported. " if pdf else
+            "(orphan line, text past its box, small font, placeholder, line through text, off-centre content "
+            "frame). "
+            + (f"Measured on the PDF exported by {args.export}. " if args.export and pdf else
+               "Measured on the supplied PDF; it covers only the version that was exported. " if pdf else
                "Measured on the LibreOffice rendering; PowerPoint/WPS text metrics can differ. ")
             + "No contrast check for PPTX.",
             errors=layout_errors, warnings=layout_warnings))
@@ -1283,7 +1606,9 @@ def cmd_pptx(args):
 # ---------------------------------------------------------------- CLI
 
 VISUAL_FIRST_HELP = (f"the deck is visual-first: hint at any paragraph or box of points over {LONG_TEXT} 字 "
-                     "(a Latin word or number counts as 2); hints only, never a failed check")
+                     f"and any slide over {PAGE_TEXT} 字 of body text (a Latin word or number counts as 2); "
+                     "hints only, never a failed check")
+ZOOM_HELP = "also write four enlarged, overlapping quarters of every slide to zoom/ for a second, closer look"
 
 
 def main():
@@ -1298,20 +1623,26 @@ def main():
     h.add_argument("--no-pdf", action="store_true", help="skip the print-to-PDF check")
     h.add_argument("--strict", action="store_true", help="nonzero exit unless required automatic checks pass")
     h.add_argument("--visual-first", action="store_true", help=VISUAL_FIRST_HELP)
+    h.add_argument("--zoom", action="store_true", help=ZOOM_HELP)
     h.set_defaults(func=cmd_html)
 
-    x = sub.add_parser("pptx", help="render a PPTX through LibreOffice (or check a PDF exported from it) "
-                                    "and inspect native objects")
+    x = sub.add_parser("pptx", help="render a PPTX through LibreOffice, WPS or PowerPoint (or check a PDF "
+                                    "exported from it) and inspect native objects")
     x.add_argument("input")
     x.add_argument("--out", required=True)
     x.add_argument("--width", type=int, default=1600)
     x.add_argument("--soffice")
-    x.add_argument("--pdf", help="use this PDF, exported from the same final PPTX by WPS, PowerPoint or another "
-                                 "renderer, for the pages and the layout check instead of LibreOffice")
+    source = x.add_mutually_exclusive_group()
+    source.add_argument("--export", choices=sorted(EXPORT_APPS),
+                        help="Windows: have WPS or PowerPoint open the final PPTX read-only and export the PDF that "
+                             "the pages and the layout check use (the app's own line breaks and fonts)")
+    source.add_argument("--pdf", help="use this PDF, exported from the same final PPTX by WPS, PowerPoint or another "
+                                      "renderer, for the pages and the layout check instead of LibreOffice")
     x.add_argument("--edit-test", action="store_true", help="edit text/table/chart in a copy, reload and render")
     x.add_argument("--edit-targets", help="JSON list of slide (1-based), shape-id path, kind, optional table cell")
     x.add_argument("--strict", action="store_true", help="nonzero exit unless required automatic checks pass")
     x.add_argument("--visual-first", action="store_true", help=VISUAL_FIRST_HELP)
+    x.add_argument("--zoom", action="store_true", help=ZOOM_HELP)
     x.set_defaults(func=cmd_pptx)
 
     s = sub.add_parser("sheet", help="contact sheet from PNG files or a directory")
